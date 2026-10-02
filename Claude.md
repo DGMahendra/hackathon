@@ -1,6 +1,17 @@
-# Claude.md — v1.0 · FROZEN · 2026-09-12
+# Claude.md — v1.2 · FROZEN · 2026-10-02
 
 **METHODOLOGY_VERSION:** pbvi_core.md v5.0
+
+**Changelog:**
+- v1.2 (2026-10-02): Added `.gitignore` to the Scope Boundary's allowed repo-root
+  files. Surfaced during Task 1.2 sign-off — a `.gitignore` excluding
+  `data/*.db*` is a legitimate build artifact needed at repo root; v1.1 omitted it.
+  Engineer-approved.
+- v1.1 (2026-10-02): Added `requirements.txt` to the Scope Boundary's allowed
+  repo-root files. Surfaced during Task 1.1 (Session 1) — a dependency declaration
+  file is a legitimate build artifact that must live at repo root for standard
+  tooling (`pip install -r requirements.txt`) to work; v1.0 omitted it. Engineer-
+  approved exception, recorded here rather than granted verbally.
 
 ## 1. System Intent
 
@@ -31,8 +42,9 @@ engineer; never resolve it silently by adjusting either document.
 ## 3. Scope Boundary
 
 CC may create or modify files only under: `src/`, `tests/`, `docs/`, `scripts/`,
-`data/`, `verification/`, `tools/`, plus `README.md` and `PROJECT_MANIFEST.md` at
-repo root. CC must not create files outside this set, must not modify
+`data/`, `verification/`, `tools/`, plus `README.md`, `PROJECT_MANIFEST.md`,
+`requirements.txt`, and `.gitignore` at repo root. CC must not create files outside
+this set, must not modify
 `docs/ARCHITECTURE.md`, `docs/INVARIANTS.md`, `docs/EXECUTION_PLAN.md`, or this file
 (`Claude.md` is frozen — see Immutability Doctrine, `pbvi_plan.md`), and must not add
 new top-level directories without an explicit engineer-approved plan amendment.

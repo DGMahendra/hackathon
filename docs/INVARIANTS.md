@@ -179,19 +179,34 @@ independent retry loops from combining into an unstated total.
 
 ## INV-D2
 
-**Condition:** An Attempt with policy_decision = DENY does not increment
-attempts_used.
+**Condition:** An Attempt whose policy_decision is DENY **or REQUIRE_APPROVAL** does
+not increment attempts_used — only an ALLOW-decided attempt (regardless of its
+downstream tool-validation or verification outcome) may increment it. *(Corrected
+during Phase 6 build, Task 1.2 — the original wording named DENY only, because
+REQUIRE_APPROVAL's non-execution behavior wasn't yet made explicit at the time INV-D2
+was first drafted in Phase 2. The underlying logic always applied equally to both:
+neither DENY nor REQUIRE_APPROVAL results in execution, so neither should consume
+budget. This was a documentation gap, not an implementation bug — the original guard
+correctly implemented the invariant as written; the written invariant was
+incomplete.)*
 **Category:** Data
 **Scope:** TASK-SCOPED *(proposed — same as INV-D1)*
-**Authorship:** CD-drafted (confirmed by engineer)
-**Why this matters:** Prevents DENY hits from being misrepresented as consumed
-recovery attempts in eval reporting.
-**Enforcement points:** Write-time check tying policy_decision to the increment logic.
+**Authorship:** CD-drafted (confirmed by engineer; correction confirmed by engineer
+at Phase 6, Task 1.2)
+**Why this matters:** Prevents DENY or REQUIRE_APPROVAL hits from being misrepresented
+as consumed recovery attempts in eval reporting.
+**Enforcement points:** Write-time check (a database trigger) permitting
+attempts_used to increase only when an ALLOW-decided Attempt exists for that
+increment — DENY, REQUIRE_APPROVAL, and not-yet-decided rows can never unlock it.
 **Failure Mode:**
-- Violation: attempts_used incremented on a DENY row.
-- Detection: Write-time check comparing policy_decision to the increment logic.
-- Blast radius: A scenario pushed to UNRECOVERED purely by repeated DENY hits it never
-  acted on — misrepresenting the harness's real recovery capability in eval numbers.
+- Violation: attempts_used incremented on a DENY or REQUIRE_APPROVAL row, or on a row
+  with no policy_decision recorded yet.
+- Detection: Write-time trigger permitting the increment only for ALLOW-decided
+  Attempts, regardless of that Attempt's downstream tool-validation or verification
+  outcome.
+- Blast radius: A scenario pushed toward UNRECOVERED purely by repeated DENY or
+  REQUIRE_APPROVAL hits it never acted on — misrepresenting the harness's real
+  recovery capability in eval numbers.
 
 ---
 

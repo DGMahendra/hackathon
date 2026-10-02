@@ -253,6 +253,15 @@ internals).
 - Represents one end-to-end run of the harness against one injected failure.
 
 **Attempt**
+- `attempt_number` semantics *(clarified during Phase 6 build, Task 1.2)*:
+  `attempt_number` equals the ScenarioRun's `attempts_used` value **at the time this
+  row is written** — not a separately-incrementing sequence. For a row that
+  completes a real (budget-consuming) attempt, this is `attempts_used` *after* the
+  increment (range 1–3). For a DENY or REQUIRE_APPROVAL row (INV-D2: these never
+  increment `attempts_used`), this is whatever `attempts_used` already stood at when
+  the decision was made (range 0–3) — so it may repeat a number already used by a
+  real attempt. `(scenario_run_id, attempt_number)` is deliberately NOT unique for
+  this reason.
 - `id`, `scenario_run_id`, `attempt_number`, `plan`, `policy_decision` (ALLOW | DENY |
   REQUIRE_APPROVAL), `tool_validation_result`, `execution_result`,
   `verification_result`, `failure_reason` (nullable), `checkpoint_state`

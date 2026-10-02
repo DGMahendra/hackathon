@@ -86,7 +86,8 @@ Attempt(id, scenario_run_id, attempt_number, plan, policy_decision,
 tool_validation_result, execution_result, verification_result, failure_reason,
 checkpoint_state) — enforce (INV-D1: attempts_used <= MAX_SCENARIO_ATTEMPTS (3) at all
 times, combined across verification-failure and tool-validation-failure retries),
-(INV-D2: an Attempt with policy_decision = DENY does not increment attempts_used), and
+(INV-D2: an Attempt whose policy_decision is DENY or REQUIRE_APPROVAL does not
+increment attempts_used — only an ALLOW-decided attempt may increment it), and
 (INV-D3: failure_reason is non-null if and only if the attempt did not pass; null on
 success) as write-time application-layer checks (SQLite CHECK constraints where
 possible, application validation otherwise).
@@ -138,7 +139,12 @@ cannot corrupt the SQLite file itself, before the logical "was the action applie
 question in Task 4.2 even becomes relevant. Write a resume(scenario_run_id) function
 that reads the last checkpoint and returns the exact state needed to continue
 (INV-S4: on resume, the system reads persisted checkpoint state and does not
-re-invoke a recovery action already marked applied).
+re-invoke a recovery action already marked applied). Write ordering requirement
+(found during Task 1.2's schema build, where a DB trigger enforces this at the data
+layer): within any single checkpoint write for an Attempt, policy_decision must be
+recorded before attempts_used is increased — never the reverse, and never in a
+separate, later transaction. This ordering is what lets INV-D2's enforcement
+mechanism verify that attempts_used only ever increases for a non-DENY decision.
 ```
 **Test cases:** Checkpoint call persists state retrievable via `resume()`; a
 `kill -9` during a checkpoint write, followed by reopening the database, leaves the
@@ -288,8 +294,13 @@ attempt_id, action) which is the ONLY legal call path to actually applying an ac
 to the pipeline. It must, in fixed order: (1) call policy_layer.evaluate(action); if
 DENY, checkpoint the Attempt with policy_decision=DENY and execution_result=None,
 write a policy_decision TraceEvent, and return without incrementing attempts_used
-(INV-S2, INV-D2); if REQUIRE_APPROVAL, checkpoint as PENDING and return without
-executing. (2) If ALLOW, call tool_validation.validate(action); if REJECTED, do not
+(INV-S2, INV-D2); if REQUIRE_APPROVAL, checkpoint the Attempt with
+policy_decision=REQUIRE_APPROVAL and execution_result=NULL (not a separate "PENDING"
+value — ARCHITECTURE.md Section 8 constrains policy_decision to exactly ALLOW, DENY,
+or REQUIRE_APPROVAL; a null execution_result is what represents "not yet executed,
+pending approval"), and return without executing or incrementing attempts_used
+(INV-D2: this applies equally to REQUIRE_APPROVAL as it does to DENY — corrected at
+Phase 6, Task 1.2). (2) If ALLOW, call tool_validation.validate(action); if REJECTED, do not
 execute — trigger the bounded re-plan path (implemented fully in Session 4). (3) If
 VALID, call state_manager.checkpoint(..., stage='pre_execute'), apply the action to
 the pipeline, call state_manager.checkpoint(..., stage='post_execute') (INV-S3). (4)
@@ -483,8 +494,8 @@ harness.attempt_action(), incrementing the single shared attempts_used counter e
 time (INV-D1: attempts_used <= MAX_SCENARIO_ATTEMPTS (3) at all times, combined across
 verification-failure and tool-validation-failure retries). Every attempt — regardless
 of which failure type triggered the re-plan — draws from the same counter (INV-D1).
-Policy DENY does not enter this loop and does not consume a budget unit (INV-D2,
-already enforced in Task 2.4). If agent_core.diagnose_and_plan() raises AgentAPIError
+Policy DENY or REQUIRE_APPROVAL does not enter this loop and does not consume a
+budget unit (INV-D2, already enforced in Task 2.4). If agent_core.diagnose_and_plan() raises AgentAPIError
 (Task 3.2), this is an infrastructure failure, not a recovery attempt: retry the API
 call directly (bounded, e.g. exponential backoff, max 3 API-level retries) without
 incrementing attempts_used. Only a genuine tool-validation rejection or verification

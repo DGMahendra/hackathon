@@ -82,6 +82,27 @@ def test_attempt_number_above_three_rejected(conn):
         _new_attempt(conn, run_id, attempt_number=4)
 
 
+def test_negative_attempt_number_rejected(conn):
+    run_id = _new_run(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _new_attempt(conn, run_id, attempt_number=-1, policy_decision="DENY")
+
+
+@pytest.mark.parametrize("decision", ["DENY", "REQUIRE_APPROVAL"])
+def test_pre_budget_decision_with_attempt_number_zero_accepted(conn, decision):
+    run_id = _new_run(conn)
+    _new_attempt(conn, run_id, attempt_number=0, policy_decision=decision)
+    assert _attempts_used(conn, run_id) == 0
+
+
+def test_deny_may_repeat_attempt_number_of_real_attempt(conn):
+    run_id = _new_run(conn)
+    _new_attempt(conn, run_id, attempt_number=1, policy_decision="ALLOW")
+    conn.execute("UPDATE ScenarioRun SET attempts_used = 1 WHERE id = ?", (run_id,))
+    _new_attempt(conn, run_id, attempt_number=1, policy_decision="DENY")
+    assert _attempts_used(conn, run_id) == 1
+
+
 def test_attempts_used_cannot_exceed_three(conn):
     run_id = _new_run(conn)
     for n in (1, 2, 3):
@@ -104,18 +125,37 @@ def test_deny_attempt_with_verification_result_does_not_affect_attempts_used(con
     assert _attempts_used(conn, run_id) == 0
 
 
-def test_attempts_used_cannot_be_incremented_for_deny_attempt(conn):
+@pytest.mark.parametrize("decision", ["DENY", "REQUIRE_APPROVAL", None])
+def test_attempts_used_cannot_be_incremented_for_non_allow_attempt(conn, decision):
     run_id = _new_run(conn)
-    _new_attempt(conn, run_id, policy_decision="DENY")
+    _new_attempt(conn, run_id, attempt_number=0, policy_decision=decision)
     with pytest.raises(sqlite3.IntegrityError, match="INV-D2"):
         conn.execute("UPDATE ScenarioRun SET attempts_used = 1 WHERE id = ?", (run_id,))
 
 
-def test_attempts_used_can_be_incremented_for_allow_attempt(conn):
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"verification_result": "PASS"},
+        {"verification_result": "FAIL", "failure_reason": "still missing"},
+        {"tool_validation_result": "REJECTED", "failure_reason": "bad params"},
+    ],
+)
+def test_attempts_used_can_be_incremented_for_allow_attempt(conn, outcome):
     run_id = _new_run(conn)
-    _new_attempt(conn, run_id, policy_decision="ALLOW")
+    _new_attempt(conn, run_id, policy_decision="ALLOW", **outcome)
     conn.execute("UPDATE ScenarioRun SET attempts_used = 1 WHERE id = ?", (run_id,))
     assert _attempts_used(conn, run_id) == 1
+
+
+def test_mixed_decisions_only_allow_counts(conn):
+    run_id = _new_run(conn)
+    _new_attempt(conn, run_id, attempt_number=0, policy_decision="DENY")
+    _new_attempt(conn, run_id, attempt_number=0, policy_decision="REQUIRE_APPROVAL")
+    _new_attempt(conn, run_id, attempt_number=1, policy_decision="ALLOW")
+    conn.execute("UPDATE ScenarioRun SET attempts_used = 1 WHERE id = ?", (run_id,))
+    with pytest.raises(sqlite3.IntegrityError, match="INV-D2"):
+        conn.execute("UPDATE ScenarioRun SET attempts_used = 2 WHERE id = ?", (run_id,))
 
 
 # --- INV-D3 ----------------------------------------------------------------

@@ -39,18 +39,18 @@ BEGIN
     SELECT RAISE(ABORT, 'INV-D5: no transition out of a terminal ScenarioRun status');
 END;
 
--- INV-D2: DENY attempts never count toward attempts_used. attempts_used may not
--- exceed the number of Attempts whose recorded policy_decision is not DENY.
-CREATE TRIGGER IF NOT EXISTS scenario_run_attempts_used_excludes_deny
+-- INV-D2: only ALLOW-decided attempts may increment attempts_used (DENY and
+-- REQUIRE_APPROVAL never do, regardless of downstream outcome). attempts_used may
+-- not exceed the number of Attempts whose recorded policy_decision is ALLOW.
+CREATE TRIGGER IF NOT EXISTS scenario_run_attempts_used_allow_only
 BEFORE UPDATE OF attempts_used ON ScenarioRun
 WHEN NEW.attempts_used > (
     SELECT COUNT(*) FROM Attempt
     WHERE scenario_run_id = NEW.id
-      AND policy_decision IS NOT NULL
-      AND policy_decision <> 'DENY'
+      AND policy_decision = 'ALLOW'
 )
 BEGIN
-    SELECT RAISE(ABORT, 'INV-D2: attempts_used exceeds count of non-DENY attempts');
+    SELECT RAISE(ABORT, 'INV-D2: attempts_used exceeds count of ALLOW attempts');
 END;
 
 -- ---------------------------------------------------------------------------
@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS Attempt (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
     scenario_run_id        INTEGER NOT NULL REFERENCES ScenarioRun(id),
     -- INV-D1: no Attempt row with attempt_number > MAX_SCENARIO_ATTEMPTS (3).
-    attempt_number         INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 3),
+    -- attempt_number = ScenarioRun.attempts_used at write time (ARCHITECTURE.md §8):
+    -- 0 is valid for a DENY / REQUIRE_APPROVAL row written before any real attempt.
+    attempt_number         INTEGER NOT NULL CHECK (attempt_number BETWEEN 0 AND 3),
     plan                   TEXT,
     -- Nullable: the Attempt row exists before the Policy Layer has decided.
     policy_decision        TEXT

@@ -68,11 +68,20 @@ individually — rejected as fragile under time pressure with a 2-person team.
 specifically both immediately before and immediately after the Execute gate (not just
 "after," as originally proposed).
 **Rationale:** Addresses the ambiguity Challenge C2 raised: a crash mid-execution could
-otherwise leave the system unable to tell whether an action was applied. Checkpointing
-on both sides of Execute, combined with idempotent action design, lets resume logic
-determine unambiguously whether to re-apply or skip.
+otherwise leave the system unable to tell whether an action was applied.
 **Alternatives rejected:** Checkpoint-after-only (original proposal) — rejected once the
 mid-execution ambiguity was surfaced.
+**Superseding refinement (found during Phase 6, Task 1.3, before Task 4.2 was
+built):** The original resolution planned to checkpoint both sides of Execute as
+separate writes and rely on idempotent action design to reconcile the ambiguous
+window between them. Before Task 4.2 was built, a stronger mechanism was adopted
+instead: the pipeline mutation and the post_execute checkpoint now commit as a single
+SQLite transaction (`state_manager.execute_and_checkpoint()`). A kill before that
+transaction commits rolls back both together, so "post_execute checkpoint exists"
+becomes a provable fact about whether the action applied, not an inference requiring
+idempotent reconciliation. This eliminates the ambiguous window by construction
+rather than detecting and recovering from it — see `EXECUTION_PLAN.md` Tasks 1.3 and
+4.2 for the implementation.
 
 ### D4 — Shared scenario-level attempt budget (`MAX_SCENARIO_ATTEMPTS = 3`)
 **Decision:** Verification failures and tool-validation failures draw from the same
@@ -150,9 +159,12 @@ makes a violation visible in code review rather than silent.
 *Strongest argument against:* Checkpointing only after a transition completes means a
 crash mid-Execute leaves the system unable to tell whether the action was actually
 applied to the pipeline.
-*Verdict:* **Valid — addressed.** Resolved by checkpointing both before and after
-Execute specifically, combined with idempotent action design (already required by the
-locked "no repeated side effects on re-invocation" decision).
+*Verdict:* **Valid — addressed, then strengthened.** Originally resolved by
+checkpointing both before and after Execute, combined with idempotent action design.
+Superseded during Phase 6 (Task 1.3) by an atomic transaction spanning the pipeline
+mutation and the post_execute checkpoint together — see D3's superseding refinement
+above. The ambiguity is now eliminated by construction rather than reconciled after
+detection.
 
 **C3 — Challenge D4 (shared budget masks failure-mode diagnostics):**
 *Strongest argument against:* Conflating verification failures and tool-validation

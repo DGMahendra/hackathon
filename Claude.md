@@ -1,8 +1,17 @@
-# Claude.md — v1.2 · FROZEN · 2026-10-02
+# Claude.md — v1.3 · FROZEN · 2026-10-02
 
 **METHODOLOGY_VERSION:** pbvi_core.md v5.0
 
 **Changelog:**
+- v1.3 (2026-10-02): Added `sessions/` as an allowed top-level directory. This was
+  an oversight dating to Phase 5 — the six session execution prompt files
+  (`sessions/S01_execution_prompt.md` through `S06_execution_prompt.md`) were
+  produced and referenced throughout `EXECUTION_PLAN.md`, but the directory itself
+  was never added to Section 3's allowed list. Surfaced correctly by Claude Code,
+  which declined to treat the engineer's instruction to proceed as sufficient
+  authorization on its own — consistent with the v1.1/v1.2 precedent of recording
+  scope exceptions in Claude.md rather than granting them verbally. Engineer-
+  approved.
 - v1.2 (2026-10-02): Added `.gitignore` to the Scope Boundary's allowed repo-root
   files. Surfaced during Task 1.2 sign-off — a `.gitignore` excluding
   `data/*.db*` is a legitimate build artifact needed at repo root; v1.1 omitted it.
@@ -42,9 +51,9 @@ engineer; never resolve it silently by adjusting either document.
 ## 3. Scope Boundary
 
 CC may create or modify files only under: `src/`, `tests/`, `docs/`, `scripts/`,
-`data/`, `verification/`, `tools/`, plus `README.md`, `PROJECT_MANIFEST.md`,
-`requirements.txt`, and `.gitignore` at repo root. CC must not create files outside
-this set, must not modify
+`data/`, `verification/`, `tools/`, `sessions/`, plus `README.md`,
+`PROJECT_MANIFEST.md`, `requirements.txt`, and `.gitignore` at repo root. CC must not
+create files outside this set, must not modify
 `docs/ARCHITECTURE.md`, `docs/INVARIANTS.md`, `docs/EXECUTION_PLAN.md`, or this file
 (`Claude.md` is frozen — see Immutability Doctrine, `pbvi_plan.md`), and must not add
 new top-level directories without an explicit engineer-approved plan amendment.

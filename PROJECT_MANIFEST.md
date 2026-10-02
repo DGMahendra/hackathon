@@ -1,9 +1,9 @@
 # PROJECT_MANIFEST.md — DataOps Agent
 
-**METHODOLOGY_VERSION:** pbvi_core.md v5.0 (pbvi_plan.md v1.0, pbvi_build.md v1.0,
+METHODOLOGY_VERSION: pbvi_core.md v5.0 (pbvi_plan.md v1.0, pbvi_build.md v1.0,
 pbvi_templates.md v3.12)
-**INVARIANT_AUTHORSHIP_MODE:** ASSISTED
-**APPLICATION_SURFACE:** BACKGROUND_SERVICE
+INVARIANT_AUTHORSHIP_MODE: ASSISTED
+APPLICATION_SURFACE: BACKGROUND_SERVICE
 
 ## Core Documents
 

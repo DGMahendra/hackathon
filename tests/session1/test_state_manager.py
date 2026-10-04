@@ -31,6 +31,7 @@ sm = _load_module("state_manager", STATE_MANAGER_PATH)
 # Child-process preamble: load the State Manager from its path and point it at argv[1].
 CHILD_PREAMBLE = f"""
 import importlib.util, sys, time
+sys.path.insert(0, r"{STATE_MANAGER_PATH.parent}")  # src/: state_manager imports pipeline_tables
 spec = importlib.util.spec_from_file_location("state_manager", r"{STATE_MANAGER_PATH}")
 sm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sm)
@@ -798,6 +799,9 @@ WRITE_TO_GUARDED_TABLE = re.compile(
 )
 SCANNED_DIRECTORIES = ("src", "scripts", "tools", "verification")
 SCANNED_SUFFIXES = (".py", ".sql", ".sh")
+# Check scripts are test code: their harness-table statements are adversarial inputs that
+# must be *denied* at runtime (INV-S8), not write paths. Exempted by name, like tests/.
+CHECK_SCRIPTS = ("scripts/assert_write_scope_isolation.py",)
 
 
 def _guarded_table_writers():
@@ -805,10 +809,11 @@ def _guarded_table_writers():
     offenders = []
     for directory in SCANNED_DIRECTORIES:
         for path in sorted((REPO_ROOT / directory).rglob("*")):
-            if path.suffix not in SCANNED_SUFFIXES or path == STATE_MANAGER_PATH:
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            if path.suffix not in SCANNED_SUFFIXES or path == STATE_MANAGER_PATH or relative in CHECK_SCRIPTS:
                 continue
             if WRITE_TO_GUARDED_TABLE.search(path.read_text(encoding="utf-8")):
-                offenders.append(path.relative_to(REPO_ROOT).as_posix())
+                offenders.append(relative)
     return offenders
 
 
@@ -866,3 +871,12 @@ def test_write_scan_ignores_non_writes_and_other_tables(statement):
 def test_write_scan_sees_the_state_manager_itself():
     """Sanity check: the one allowed writer is detected when not excluded."""
     assert WRITE_TO_GUARDED_TABLE.search(STATE_MANAGER_PATH.read_text(encoding="utf-8"))
+
+
+def test_write_scan_exemption_is_only_the_named_check_script():
+    assert CHECK_SCRIPTS == ("scripts/assert_write_scope_isolation.py",)
+    # The exempt script really does contain harness-table statements (so the exemption is needed)...
+    exempt_source = (REPO_ROOT / CHECK_SCRIPTS[0]).read_text(encoding="utf-8")
+    assert WRITE_TO_GUARDED_TABLE.search(exempt_source)
+    # ...and every one of them is an input it expects to be denied, not something it runs for effect.
+    assert "FORBIDDEN_APPLY_SQL" in exempt_source and "not authorized" in exempt_source

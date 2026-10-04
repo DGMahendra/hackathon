@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress
+**Status:** Integration check passed — merge pending
 
 ## Pre-Build Validation
 
@@ -97,7 +97,7 @@ recorded below are discrepancies or gaps, not conflicts.
 | 2.1 | Policy Layer | Completed | 09739c6 |
 | 2.2 | Tool Validation | Completed | ea09e4f |
 | 2.3 | Deterministic Verification | Completed | 0fef507 |
-| 2.4 | Execute Funnel Function | Completed | see S2.4 commit |
+| 2.4 | Execute Funnel Function | Completed | f46ca76 |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -154,10 +154,27 @@ Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)
 
 ---
 
+## Session Integration Check
+
+**Run:** 2026-10-04 at `f46ca76`. Ran the superset of the two definitions (see Pre-Build
+Validation discrepancies): `docs/EXECUTION_PLAN.md`'s two commands plus the session prompt's
+`assert_write_scope_isolation.py`.
+
+```bash
+python -m pytest tests/session2/ -v && python scripts/simulate_deny_path.py --assert-no-execution && python scripts/assert_write_scope_isolation.py
+```
+
+**Result:** exit 0. `tests/session2/`: 513 passed. `simulate_deny_path.py`: 5 injected actions,
+all DENY, 0 calls past policy, pipeline unchanged, attempts_used 0. `assert_write_scope_isolation.py`:
+INV-S8 OK (8 targets rejected by the primitive, 13 statements denied by the authorizer).
+Regression: `tests/session1/` 258 passed.
+
+---
+
 ## Session Completion
-**Session integration check:** [ ] PASSED
+**Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
 **PR raised:** [ ] Yes — PR #: [branch] → main
-**Status updated to:** 
-**Engineer sign-off:** 
+**Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
+**Engineer sign-off:** DEFERRED — engineer review at end of build

@@ -83,8 +83,8 @@ authoritative (the prompt itself says "follow that document exactly").
 
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
-| 4.1 | Shared Attempt Budget & Re-plan Loop | Completed | see S4.1 commit |
-| 4.2 | Crash-Resume Path | | |
+| 4.1 | Shared Attempt Budget & Re-plan Loop | Completed | 364d138 |
+| 4.2 | Crash-Resume Path | Completed | see S4.2 commit |
 | 4.3 | Concurrency Guard | | |
 
 Valid Status values: Completed | BLOCKED | SKIPPED

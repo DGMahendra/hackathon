@@ -26,6 +26,7 @@ FUNNEL = "src/harness.py"
 CHECK_SCRIPTS = (
     "scripts/assert_write_scope_isolation.py",  # INV-S8 runtime check exercises the primitive
     "scripts/simulate_deny_path.py",  # INV-S2 check spies on the primitive
+    "scripts/simulate_crash_resume.py",  # INV-S3/S4 check freezes the primitive mid-transaction to kill it
 )
 GUARDED = {
     "pipeline_write": ("src/harness.py",),

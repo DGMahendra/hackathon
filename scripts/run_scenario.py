@@ -57,13 +57,23 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def write_trace_segment(trace_path: Path, scenario_run_id: int) -> Path:
-    """Copy the run's lines from the JSONL trace into <trace dir>/trace_segments/run_<id>.jsonl; return its path."""
+    """Copy the run's lines from the JSONL trace into <trace dir>/trace_segments/run_<id>.jsonl; return its path.
+    Lines that are not JSON objects (e.g. a partial line isolated after a kill) are skipped."""
     lines = [line for line in trace_path.read_text(encoding="utf-8").splitlines()
-             if line.strip() and json.loads(line).get("scenario_run_id") == scenario_run_id]
+             if _run_id_of(line) == scenario_run_id]
     segment = trace_path.parent / "trace_segments" / f"run_{scenario_run_id:04d}.jsonl"
     segment.parent.mkdir(parents=True, exist_ok=True)
     segment.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     return segment
+
+
+def _run_id_of(line: str):
+    """Return the scenario_run_id of a trace line, or None if the line is not a JSON object."""
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    return record.get("scenario_run_id") if isinstance(record, dict) else None
 
 
 def main(argv=None) -> int:

@@ -458,7 +458,8 @@ def test_call_site_counter_counts_owner_qualified_calls():
 def test_single_caller_check_scans_every_permitted_code_directory():
     checker = _single_caller_checker()
     assert set(checker.SCANNED_DIRECTORIES) == {"src", "scripts", "tools", "verification"}
-    assert checker.CHECK_SCRIPTS == ("scripts/assert_write_scope_isolation.py", "scripts/simulate_deny_path.py")
+    assert checker.CHECK_SCRIPTS == ("scripts/assert_write_scope_isolation.py", "scripts/simulate_deny_path.py",
+                                     "scripts/simulate_crash_resume.py")
 
 
 @pytest.mark.parametrize("directory", ["tools", "verification", "scripts"])

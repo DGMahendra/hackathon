@@ -183,3 +183,196 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 4.2 — Crash-Resume Path
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Kill before the pre_execute checkpoint | action_applied=False; resume executes once, normally | N/A | PASS |
+| TC-2 | Kill after pre_execute, before the execute_and_checkpoint transaction commits (incl. mid-apply_fn) | action_applied=False, pipeline mutation absent; resume executes once, normally (not a special ambiguous case) | N/A | PASS |
+| TC-3 | Kill after the transaction commits | action_applied=True; resume does not re-execute, proceeds straight to verification | N/A | PASS |
+
+Verification command: `python scripts/simulate_crash_resume.py --assert-atomic --assert-both-cases`
+- Simulator run 1 (all four flags): it crashed — the `after_commit` hook froze on
+  `verification.verify`, which the *agent* also calls while planning, so the child was killed
+  before any attempt existed. This was a simulator bug, not a harness bug. Fixed by hooking the
+  funnel's post-execute stage (`harness._verify`); every kill point now also asserts it landed at
+  its intended `last_stage`, which would have caught the bug.
+- Simulator run 2: exit 0. Per kill point (child killed with `Popen.kill()`, TerminateProcess on
+  Windows):
+
+  | Kill point | State after kill | On resume |
+  |---|---|---|
+  | before_pre_execute | `tool_validation`, applied False, pipeline unmutated | executed once → RECOVERED |
+  | mid_apply | `pre_execute`, applied False, unmutated; write lock **held** at the kill (proves mid-transaction) | executed once → RECOVERED |
+  | after_commit | `post_execute`, applied True, mutated | **0** executions, straight to verification → RECOVERED |
+  | after_commit_before_trace | as after_commit | 0 executions → RECOVERED; the trace has **no** `tool_call` line, and the resume event's `action_applied=True` is the record |
+
+  Every case: attempts_used 1, the pipeline identical to one application of the fix, one resume
+  event.
+- The exact verification command: **exit 0**. `tests/session4/test_crash_resume.py`: **22
+  passed**.
+- After the Challenge Finding 1–4 and 6 fixes: the simulator has 5 kill points (adding
+  `post_execute_uncommitted`, plus a WAL check); the exact command still exits **0**;
+  `test_crash_resume.py` **28 passed**. Whole suite without the live tests: 934 passed. INV-S1 and INV-S8 checks OK.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S04 "Task 4.2"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S04 Task 4.2...
+## CC Challenge — Task 4.2 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S04
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | A crash inside attempt N≥2 after an earlier attempt already committed a `post_execute`. Example: attempt 1 applied and failed verification, attempt 2 reached VALID, then the process was killed before `pre_execute`. All simulator kill points use run 1 / attempt 1 only. | If `state_manager.resume()` derives `action_applied` from any `post_execute` row in the run, rather than one for the latest attempt, resume takes case 2 and skips executing attempt 2. That is a silent non-execution reported as "applied". | INV-S4, INV-S3 |
+| 2 | A second crash during resume, followed by another resume. Example: in the `after_commit` case, the resume is killed during `_verify` and then resumed again. The simulator resumes each kill point exactly once, in-process. | INV-S4's stated detection is "resume twice, assert pipeline state unchanged after the second resume". Only a terminal-run no-op and a finished-attempt `resume_attempt` are tested; no IN_PROGRESS run is resumed twice. | INV-S4 |
+| 3 | Case 2 (applied) where verification on resume returns FAIL. Also case 1 executing a wrong action on resume. All simulator and unit case-1/case-2 paths use FIX, so verification always passes. | `_ending_for(attempt["id"], None, outcome)` must return None and hand control to `_recovery_loop` for a re-plan. This path is never exercised from `_resume_in_flight_attempt`. | INV-S5, INV-D1 |
+| 4 | The in-flight attempt is attempt 3 (budget fully spent), the kill lands after commit, and verification FAILs on resume. | The run should end BUDGET_EXHAUSTED with no planning call and `attempts_used` = 3. `test_resume_respects_the_spent_budget` covers only attempts that were already verified before the "crash". | INV-D1 |
+| 5 | An in-flight attempt with `tool_validation_result` = REJECTED, resumed through `orchestrator.resume_run`. It is tested only at the `harness.resume_attempt` level. | Nothing confirms that the orchestrator re-plans, and does not end the run, when `needs_replan=True` comes back from `_resume_in_flight_attempt`. | INV-D1 |
+| 6 | A kill between the `post_execute` INSERT and the COMMIT inside `execute_and_checkpoint`. `mid_apply` freezes right after `pipeline_write.write`, before the `post_execute` row is written. | This is the exact boundary that `action_applied` relies on: an uncommitted `post_execute` row must read as absent. | INV-S3 |
+| 7 | `resume_scenario.py --scenario-run-id` with a run ID that does not exist in the database. | `state_manager.resume()` behaviour for an unknown ID is unspecified at the CLI. It could produce an uncaught traceback, and the exit code is untested (0/1/2 are defined only for other cases). | NONE |
+| 8 | MISSING_COLUMN and PROMPT_INJECTION are never crash-killed. The simulator runs SCHEMA_DRIFT only, and `_mutated()` checks only the column rename. | A DML backfill fix (MISSING_COLUMN) is a different kind of mutation from a DDL rename. Atomicity and single application are proven for one tool only. | INV-S3, INV-S4 |
+| 9 | The `except Exception: _abandon(...)` branch in `resume_run`. | Nothing confirms that an unexpected exception during resume leaves the run UNRECOVERED (HARNESS_ERROR) rather than stuck IN_PROGRESS. | INV-D5 |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | `state["action_applied"]` refers to the attempt being resumed (the latest attempt), not to the run as a whole. | `resume_attempt` uses `state["action_applied"]` next to `state["attempt"]` without checking that they refer to the same attempt. | YES |
+| 2 | A trace line partly written when the kill lands always ends in a newline, so the next `emit` (the resume event) starts on its own line. | `test_trace_segment_skips_partial_lines` uses a partial line that ends in `\n`. If the kill truncates the line with no newline, the resume event would be appended to it, and `_run_id_of` would then drop "the record". | YES |
+| 3 | The plan checkpoint always stores the action under `json.loads(plan)["action"]`. | The unit tests build plans with their own helper, `_planned_attempt`. Only the SCHEMA_DRIFT simulator path exercises the real planner's format. | YES |
+| 4 | Checkpoint writes on the crash databases are WAL-backed. | The simulator asserts `PRAGMA integrity_check` but never `PRAGMA journal_mode` = wal on the database the child created. | YES |
+| 5 | Nothing else is writing to the run when resume starts: the original process is dead. | `resume_run` checks only `status == IN_PROGRESS`. It cannot tell a live writer from a killed one. | NO (concurrency guard is Task 4.3) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S4 (resume-twice idempotency, multi-attempt `action_applied` scope) | YES | NO |
+| INV-S3 (`post_execute`-inserted-but-uncommitted kill; WAL mode on the crash DB) | YES | NO |
+| INV-D1 (in-flight attempt at the budget cap, resumed and failing) | YES | NO |
+| INV-D5 (`resume_run` exception → terminal status) | YES | NO |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Resume invoked while the original process is still alive (two writers on one IN_PROGRESS run) | Concurrency guard is Task 4.3 (INV-S7) |
+| Live kill-and-restart demo against the real Claude API (operator Ctrl-C / task-kill) | Needs a live API key and a human operator; the simulator uses a fake API |
+| Power loss or OS-level crash (as opposed to process kill) during a WAL checkpoint | Needs external, hardware-level fault injection |
+| POSIX SIGKILL behaviour | Verified only on Windows (TerminateProcess); needs a different platform |
+
+### Challenge Verdict
+
+FINDINGS — 7 item(s) require engineer disposition before commit.
+  Finding 1: No crash/resume test where an earlier attempt already committed `post_execute` and the latest attempt is killed before execution. Whether `action_applied` is scoped to the latest attempt is unverified. If it is run-wide, resume wrongly skips execution (INV-S4).
+  Finding 2: No IN_PROGRESS run is resumed twice (a crash during resume, then a second resume). This is the detection method INV-S4 itself prescribes.
+  Finding 3: There is no test of case 2 (or case 1) on resume where verification FAILs. The handoff from `_resume_in_flight_attempt` to `_recovery_loop` for a re-plan is unexercised.
+  Finding 4: There is no test of an in-flight attempt 3 that commits, is killed, and then fails verification on resume. Nothing confirms BUDGET_EXHAUSTED with no extra planning call (INV-D1).
+  Finding 5: A partial trace line with no newline is not covered. The resume event, which is the stated evidentiary record, may be merged into the truncated line and then dropped by `write_trace_segment`.
+  Finding 6: There is no kill between the `post_execute` INSERT and the COMMIT, the exact boundary `action_applied` depends on. The simulator also never asserts WAL mode on the crash databases (INV-S3).
+  Finding 7: `resume_run`'s generic-exception `_abandon` path is untested. `resume_scenario.py` with an unknown `--scenario-run-id` is untested.
+
+**Verdict:** FINDINGS — 7
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (INV-S3) | `test_earlier_applied_attempt_does_not_mark_the_next_as_applied`: attempt 1 applied and FAILed, attempt 2 killed before pre_execute → `resume()` reports action_applied False (it is scoped to the latest attempt's checkpoint_state); resume executes attempt 2 exactly once and PASSes | PASS |
+| 2 | TEST (atomicity of execute_and_checkpoint, INV-S4's own detection) | `test_resume_twice_after_a_crash_during_resume`: the first resume executes, then is killed before verification; the second resume does not execute again, the pipeline is unchanged by it, attempts_used stays 1, and both resumes are traced | PASS |
+| 3 | TEST (INV-S5, INV-D1) | `test_resume_verification_fail_replans` (case 1 and case 2): an in-flight wrong action FAILs verification on resume → the run hands over to the re-plan loop → RECOVERED on the next plan, attempts_used 2. Also `test_resume_of_a_rejected_in_flight_attempt_replans` (the Untested Scenario 5 path) | PASS |
+| 4 | TEST (INV-D1) | `test_in_flight_last_attempt_failing_on_resume_exhausts_the_budget`: attempt 3 commits and is killed; on resume it FAILs → BUDGET_EXHAUSTED with no planning request; attempts_used 3 | PASS |
+| 5 | ACCEPT | No listed invariant. The Trace Logger already isolates a partial final line by writing a newline before the next record (`_separator_for_partial_line`, Task 1.4, tested), so the resume event always starts on its own line and `write_trace_segment` keeps it | N/A |
+| 6 | TEST (INV-S3) | New simulator kill point `post_execute_uncommitted`: the child freezes right after writing the post_execute row inside the open transaction (write lock held) → after the kill, action_applied False and the pipeline unmutated → resume executes once. `_integrity_ok` now also requires WAL mode on every crash database. `test_crash_simulation_passes_every_assertion` asserts both | PASS |
+| 7 | ACCEPT | INV-D5 is not on the TEST list. `resume_run` shares `_abandon` with `run_scenario`, whose HARNESS_ERROR path is tested (Task 3.3); an unknown `--scenario-run-id` raises the State Manager's CheckpointError and the CLI exits non-zero | N/A |
+
+### Code Review
+Invariant text is embedded in the Task 4.2 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review (results left blank):
+- INV-S4: resume reads persisted checkpoint state only; an action whose post_execute
+  checkpoint exists is never re-executed; a recorded gate decision is never re-made.
+- INV-S3: the two resume cases rest on execute_and_checkpoint's atomicity — "post_execute
+  exists" ⇔ the mutation committed; no idempotent-reconciliation third case.
+- INV-D1: resuming never consumes an extra budget unit for the in-flight attempt.
+- Every resume emits a state_transition event with last_stage and action_applied.
+- INV-S1: the resume path executes only via harness._execute (single call site preserved).
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 4.2
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S04.md, sessions/VERIFICATION_RECORD_S04.md,
+                    src/harness.py, src/orchestrator.py, scripts/run_scenario.py,
+                    scripts/resume_scenario.py (new), scripts/simulate_crash_resume.py (new),
+                    scripts/assert_single_execute_caller.py, tests/session2/test_harness_funnel.py,
+                    tests/session4/test_crash_resume.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/harness.py — resume_attempt, _validate_execute_verify, _execute_and_verify,
+                    _verify; src/orchestrator.py — resume_run, _resume_event,
+                    _resume_in_flight_attempt; scripts/run_scenario.py — _run_id_of;
+                    scripts/resume_scenario.py, scripts/simulate_crash_resume.py — new modules
+Functions modified: src/harness.py — attempt_action (now composed of the stage functions; same
+                    behaviour); scripts/run_scenario.py — write_trace_segment (skips non-JSON lines)
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     scripts/assert_single_execute_caller.py — CHECK_SCRIPTS gains
+                    scripts/simulate_crash_resume.py (named, printed exemption; pinned by a test)
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- Two resume cases exactly, per `docs/EXECUTION_PLAN.md` Task 4.2 (no idempotent-reconciliation
+  third case). `harness.resume_attempt` continues the latest attempt from its persisted stage:
+  - no policy decision → the full funnel;
+  - DENY / REQUIRE_APPROVAL → that outcome, never re-evaluated;
+  - ALLOW without validation → validate, execute, verify (no second budget increment);
+  - REJECTED → re-plan;
+  - VALID and not applied → execute once (case 1); VALID and applied → verify only (case 2);
+  - verification recorded → the recorded outcome.
+  It reuses the same stage functions as `attempt_action`, so `_execute` remains the single call
+  site of `execute_and_checkpoint` and `pipeline_write.write` (INV-S1 check passes). This is why
+  `harness.py` is touched (see Pre-Build Validation).
+- `orchestrator.resume_run`:
+  - terminal run → reported unchanged (ALREADY_TERMINAL);
+  - otherwise it emits a `state_transition` resume event (last_stage, action_applied,
+    attempt_id, attempts_used), finishes the in-flight attempt (if a plan was recorded), then
+    continues the normal recovery loop (budget, API retries, endings);
+  - it never re-injects.
+- `scripts/resume_scenario.py --scenario-run-id ID [--db] [--trace]`: exit 0 RECOVERED, 1
+  otherwise, 2 for a missing database.
+- `scripts/simulate_crash_resume.py`:
+  - 4 kill points covering the 3 crash timings;
+  - the plan comes from an in-child fake Claude API (deterministic, no cost);
+  - flags `--assert-atomic`, `--assert-both-cases`, `--assert-idempotent`,
+    `--assert-all-three-cases` (the last = the three crash timings; see Pre-Build Validation);
+  - it is a check script, so it is exempt by name from the INV-S1 reference scan.
+- `write_trace_segment` now skips lines that are not JSON objects, such as a partial line left
+  by a kill (closes the Session 3 observation).
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

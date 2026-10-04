@@ -22,6 +22,11 @@ The recovery loop (Task 4.1):
 
 A run always ends in a terminal status. If anything in the harness raises after the run exists, the
 run is completed UNRECOVERED (HARNESS_ERROR) and the exception is re-raised.
+
+resume_run(scenario_run_id) (Task 4.2) continues a run interrupted by a crash, from exactly its last
+checkpoint (INV-S4): it traces what it found (last_stage, action_applied), finishes the in-flight
+attempt through harness.resume_attempt — which never re-executes an applied action — and then
+continues the same recovery loop. It never re-injects the failure: the pipeline is as the crash left it.
 """
 
 import json
@@ -91,6 +96,41 @@ def run_scenario(scenario_type: str, seed: int, client=None) -> ScenarioResult:
     except Exception as exc:
         _abandon(run_id, exc)
         raise
+
+
+def resume_run(scenario_run_id: int, client=None) -> ScenarioResult:
+    """Continue an interrupted run from its persisted state; a terminal run is reported unchanged."""
+    state = state_manager.resume(scenario_run_id)
+    if state["status"] != "IN_PROGRESS":
+        return ScenarioResult(scenario_run_id, state["scenario_type"], None, state["status"],
+                              f"ALREADY_TERMINAL: run was {state['status']} before resume")
+    try:
+        trace_logger.emit(scenario_run_id, None, "state_transition", _resume_event(state))
+        ending = _resume_in_flight_attempt(scenario_run_id, state) or _recovery_loop(scenario_run_id, client)
+        return _finish(scenario_run_id, state["scenario_type"], None, ending)
+    except Exception as exc:
+        _abandon(scenario_run_id, exc)
+        raise
+
+
+def _resume_event(state: dict) -> dict:
+    """The trace record of what resume() found — the evidence if a kill beat a trace line."""
+    attempt = state["attempt"]
+    return {"stage": "resume", "last_stage": state["last_stage"], "action_applied": state["action_applied"],
+            "attempt_id": attempt["id"] if attempt else None, "attempts_used": state["attempts_used"]}
+
+
+def _resume_in_flight_attempt(run_id: int, state: dict):
+    """Finish the latest attempt if a plan was recorded for it; return its ending, or None to keep looping."""
+    attempt = state["attempt"]
+    if attempt is None or attempt["plan"] is None:
+        return None  # nothing was proposed yet: plan afresh
+    action = json.loads(attempt["plan"])["action"]
+    try:
+        outcome = harness.resume_attempt(run_id, attempt["id"], action)
+    except sqlite3.OperationalError as exc:
+        return _Ending(UNRECOVERED, "EXECUTION_ERROR", str(exc))
+    return _ending_for(attempt["id"], None, outcome)
 
 
 def _recovery_loop(run_id: int, client) -> _Ending:

@@ -17,6 +17,13 @@ an action to the pipeline (INV-S1). In fixed order:
 Every trace event is emitted only AFTER the checkpoint it describes has committed, so the
 trace never claims something that did not commit (ARCHITECTURE.md §8). This module never
 sets the run's status — completing a run is the orchestrator's job (Sessions 3–4).
+
+resume_attempt(scenario_run_id, attempt_id, action) continues an interrupted attempt from its
+persisted stage (Task 4.2, INV-S4): a recorded gate decision is never re-made, and an action
+whose post_execute checkpoint exists is never re-executed. Exactly two execute cases exist,
+because execute_and_checkpoint() is atomic (INV-S3): action_applied False → execute (once);
+action_applied True → straight to verification. Both reuse the same stage functions as
+attempt_action, so `_execute` stays the single call site of execute_and_checkpoint (INV-S1).
 """
 
 import json
@@ -57,14 +64,53 @@ def attempt_action(scenario_run_id: int, attempt_id: int, action) -> AttemptOutc
     if decision is not PolicyDecision.ALLOW:
         return _record_blocked(scenario_run_id, attempt_id, decision, action)
     _record_allow(scenario_run_id, attempt_id, action)
+    return _validate_execute_verify(scenario_run_id, attempt_id, action)
+
+
+def resume_attempt(scenario_run_id: int, attempt_id: int, action) -> AttemptOutcome:
+    """Continue the run's latest attempt from its persisted stage; never redo a recorded step (INV-S4)."""
+    state = state_manager.resume(scenario_run_id)
+    attempt = state["attempt"]
+    if attempt is None or attempt["id"] != attempt_id:
+        raise ValueError(f"attempt {attempt_id} is not the latest attempt of scenario_run {scenario_run_id}")
+    decision, validation = attempt["policy_decision"], attempt["tool_validation_result"]
+    if decision is None:
+        return attempt_action(scenario_run_id, attempt_id, action)
+    if decision != PolicyDecision.ALLOW.value:
+        return AttemptOutcome(decision)
+    if validation is None:
+        return _validate_execute_verify(scenario_run_id, attempt_id, action)
+    if validation != tool_validation.VALID:
+        return AttemptOutcome(decision, validation, failure_reason=attempt["failure_reason"], needs_replan=True)
+    if attempt["verification_result"] is not None:
+        return AttemptOutcome(decision, validation, True, attempt["execution_result"],
+                              attempt["verification_result"], attempt["failure_reason"])
+    if not state["action_applied"]:
+        return _execute_and_verify(scenario_run_id, attempt_id, action)  # case 1: never committed → execute once
+    return _verify(scenario_run_id, attempt_id, attempt["execution_result"])  # case 2: committed → verify only
+
+
+def _validate_execute_verify(scenario_run_id: int, attempt_id: int, action) -> AttemptOutcome:
+    """Stages (2)–(4) for an ALLOW-decided attempt: validate, then execute and verify if VALID."""
     validation = tool_validation.validate(action)
     _record_validation(scenario_run_id, attempt_id, validation)
     if not validation.is_valid:
-        return AttemptOutcome(decision, validation.status, failure_reason=validation.reason, needs_replan=True)
-    execution_result = _execute(scenario_run_id, attempt_id, action)
+        return AttemptOutcome(PolicyDecision.ALLOW.value, validation.status, failure_reason=validation.reason,
+                              needs_replan=True)
+    return _execute_and_verify(scenario_run_id, attempt_id, action)
+
+
+def _execute_and_verify(scenario_run_id: int, attempt_id: int, action) -> AttemptOutcome:
+    """Stages (3)–(4): apply the action atomically with post_execute, then verify."""
+    return _verify(scenario_run_id, attempt_id, _execute(scenario_run_id, attempt_id, action))
+
+
+def _verify(scenario_run_id: int, attempt_id: int, execution_result: str) -> AttemptOutcome:
+    """Stage (4): Deterministic Verification of an applied attempt, checkpointed (INV-S5)."""
     result = verification.verify(scenario_run_id)
     _record_verification(scenario_run_id, attempt_id, result)
-    return AttemptOutcome(decision, validation.status, True, execution_result, result.status, result.failure_reason)
+    return AttemptOutcome(PolicyDecision.ALLOW.value, tool_validation.VALID, True, execution_result,
+                          result.status, result.failure_reason)
 
 
 def _record_blocked(scenario_run_id: int, attempt_id: int, decision: PolicyDecision, action) -> AttemptOutcome:

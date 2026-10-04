@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress (resumed at Task 3.2 after credit was added)
+**Status:** BLOCKED at the Session 3 Integration Check — `--dry-run` undefined (decision not covered)
 
 ## Pre-Build Validation
 
@@ -87,7 +87,7 @@ INV-D6 (Session 5) is supported by making `inject(scenario_type, seed)` fully re
 | 3.1 | Failure Injector (3 scenarios) | Completed | 3534810 |
 | 3.2 | Agent/Planner Core Loop | Completed | 4d717c6 |
 | 3.3 | Scenario Orchestrator | Completed | 2922e2e |
-| 3.4 | CLI Entry Point | Completed | see S3.4 commit |
+| 3.4 | CLI Entry Point | Completed | f6e2bb2 |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -124,6 +124,7 @@ Leave this table empty if the session was not resumed.
 | Session start | Engineer waived per-session review and Pre-Build CONFIRMED waits; review deferred to end of build. | Pre-Build Validation recorded and the session proceeded without a CONFIRMED wait; sign-off fields set to "DEFERRED — engineer review at end of build"; no engineer-verified/reviewed checkbox ticked by CC |
 | 3.2 | SESSION BLOCKED (2026-10-04) before Task 3.2 started: `ANTHROPIC_API_KEY` is not set in this environment (checked for presence only; value never read or set), and the `anthropic` SDK is not installed. Task 3.2's verification (`tests/session3/test_agent_core.py`, which needs a live `claude-sonnet-5` call for its planning test cases), Task 3.3's (`run_scenario.py` for all three scenarios) and the Session Integration Check all need live model calls | Stopped per the engineer's standing instruction (missing ANTHROPIC_API_KEY when Session 3 needs it). Task 3.1 is committed (3534810); branch pushed as a backup; no PR, no merge. To resume: set ANTHROPIC_API_KEY in the project's environment and install requirements (`pip install -r requirements.txt`) |
 | 3.2 | SESSION BLOCKED (2026-10-04, second time): Task 3.2's verification command fails — 24 passed, 2 failed. Both live tests (TC-1 SCHEMA_DRIFT plan, TC-2 PROMPT_INJECTION trace) received `400 invalid_request_error: Your credit balance is too low to access the Anthropic API` (request req_011CfhNr7K6ykZBoscwEcqvt). The key authenticates; the account has no credit. agent_core mapped it correctly to a non-retryable AgentAPIError | Stopped under FAILURE HANDLING; Task 3.2 implementation left staged, not committed. To resume: add credit to the Anthropic account (Plans & Billing) and re-run `python -m pytest tests/session3/test_agent_core.py -v` |
+| Integration | SESSION BLOCKED (2026-10-04): the Session 3 Integration Check (`python -m pytest tests/session3/ -v && python scripts/run_scenario.py --scenario SCHEMA_DRIFT --dry-run`) fails with exit 2. `tests/session3/`: 115 passed (live tests included), but `--dry-run` is rejected as an unrecognized argument. `--dry-run` appears only in the Integration Check (`docs/EXECUTION_PLAN.md` line 394, `sessions/S03_execution_prompt.md` line 50); no task prompt defines it, and Task 3.4's prompt specifies only `--scenario` and `[--seed N]`. Its meaning is a decision not covered by Claude.md or EXECUTION_PLAN.md | Stopped per the engineer's standing instruction: Integration Check failed → no merge; decision not covered → SESSION BLOCKED. Branch pushed as a backup; no PR. Options for the engineer: (a) full run against a throwaway database and trace (temp dir), so nothing in `data/` changes; (b) plan only: inject + live plan, print the proposed action and the decisions Policy / Tool Validation would make, no attempt, no execution; (c) treat it as a typo and drop it from the check (needs a `docs/EXECUTION_PLAN.md` change by the engineer). CC recommends (a) |
 
 ---
 

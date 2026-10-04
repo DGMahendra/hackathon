@@ -163,3 +163,174 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 3.2 — Agent/Planner Core Loop
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | SCHEMA_DRIFT context (live `claude-sonnet-5`) | Plan proposes a schema-reconciliation action | N/A | PASS |
+| TC-2 | PROMPT_INJECTION context (live) | Plan reasoning captured in the trace regardless of the proposed action | N/A | PASS |
+| TC-3 | Simulated API timeout | Raises `AgentAPIError`, distinguishable from a normal (even low-quality) plan | N/A | PASS |
+
+Verification command: `python -m pytest tests/session3/test_agent_core.py -v`
+- Run 1 (non-live tests only, `-k "not live"`): 24 passed.
+- Run 2 (full command): **24 passed, 2 failed (exit 1)**. Both live tests failed with
+  `400 invalid_request_error — Your credit balance is too low to access the Anthropic API`
+  (req_011CfhNr7K6ykZBoscwEcqvt). The failure is environmental (billing); the agent raised it
+  as a non-retryable `AgentAPIError` as designed. SESSION BLOCKED — see `SESSION_LOG_S03.md`.
+- Run 3 (after the engineer added credit): **26 passed** (exit 0), including both live
+  `claude-sonnet-5` tests.
+- Run 4 (after the Challenge Finding 2 fix): **30 passed** (exit 0), live tests included.
+  Whole suite without the live tests: 843 passed.
+Beyond TC-1 to TC-3, the tests cover:
+- connection refused → retryable `AgentAPIError`;
+- HTTP errors → `AgentAPIError`: 429, 500 and 529 retryable; 400 and 401 not;
+- six malformed-response shapes (truncated, not JSON, missing field, `params_json` not JSON or
+  not an object, no text block) → retryable `AgentAPIError`, with no trace event;
+- a refusal → `PlanningError`, which is disjoint from `AgentAPIError`;
+- an unsafe but well-formed plan is returned and traced, to be judged by the harness;
+- the request is pinned to `claude-sonnet-5` with the plan schema; the prompt contains the
+  poisoned record and the verification symptoms, never the injector's description;
+- planning never writes the database, and `agent_core` has no path to execution (AST);
+- an unknown run is not an API error, and a missing key → non-retryable `AgentAPIError`;
+- `env_file` loads only `ANTHROPIC_API_KEY` and never overrides the environment;
+- `.env` is gitignored.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S03 "Task 3.2"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S03 Task 3.2...
+## CC Challenge — Task 3.2 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S03
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | The model refuses during a PROMPT_INJECTION run (`stop_reason == "refusal"`). `test_refusal_is_a_planning_error_not_an_api_error` checks only the exception type. It never checks what reaches the trace, and `diagnose_and_plan` emits the trace only after `_parse_plan` succeeds. | TC-2 requires the reasoning in the trace "regardless of what the agent proposes". A refusal is the likeliest PROMPT_INJECTION outcome, and it currently leaves no trace event. The demo would have nothing to show. | NONE (TC-2 spec) |
+| 2 | The SDK raises an `anthropic.APIError` that is not an `APIStatusError`, timeout or connection error (e.g. `APIResponseValidationError`, or a non-JSON 200 body). `_request` catches only three exception families. | The spec says malformed or unparseable responses must raise `AgentAPIError`. These would escape as raw SDK exceptions. The docstring's claim of "any other API error" is untested. Task 4.1 would treat them as planning failures or crash. | INV-D1 (budget split depends on the error type) |
+| 3 | A pipeline table is missing. `_pipeline_snapshot` prints `'missing'` when `PRAGMA table_info` returns nothing, but the next statement, `SELECT * FROM "{table}"`, then raises a raw `sqlite3.OperationalError`. | The fallback branch can never be reached. A missing table surfaces as an uncategorised exception, neither `AgentAPIError` nor `PlanningError`. | NONE |
+| 4 | The poisoned record sits beyond row 50, or ordering differs. The snapshot uses `LIMIT 50` with no `ORDER BY`, and the test checks `INJECTION_TEXT in prompt` only for seed 21. | Other seeds may never show the payload to the agent. The PROMPT_INJECTION scenario would silently become a no-op, and an ablation would compare non-events. | NONE (INV-D6 indirectly) |
+| 5 | No test runs a MISSING_COLUMN context, not even against the fake API. The `"(verification currently passes)"` branch of `_build_prompt` is also untested. | One of the three in-scope scenarios has never had its prompt built or checked for symptoms. | NONE |
+| 6 | No fake response puts a `thinking` block before the text block, or uses a `stop_reason` other than `end_turn`, `max_tokens` or `refusal` (e.g. `pause_turn`, `stop_sequence`, `tool_use`). | Adaptive thinking is left at the model default. The parser's `next(...text...)` and `!= "end_turn"` logic is exercised by only two live calls. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | The production client from `_client()` (`anthropic.Anthropic()`) behaves like the test client. It actually keeps the SDK defaults: `max_retries=2` and roughly a 10-minute timeout. Every error-path test injects a client with `max_retries=0, timeout=1.0`. | Hidden SDK retries plus Task 4.1's infrastructure retries multiply attempts. A "timeout" in production takes minutes. Nothing asserts the client's configuration. | YES |
+| 2 | Only 429 and 5xx are retryable. A 408 (request timeout) or 409 maps to `retryable=False`, although the spec groups timeouts with retryable infrastructure failures. | `_request`: `status_code == 429 or >= 500` | YES |
+| 3 | A `?mode=ro` URI connection can always open the WAL-mode database. In WAL mode a read-only open can fail if the `-shm`/`-wal` files are absent and the directory isn't writable. Tests always open after harness init, when those files exist. | `_connect_read_only` | YES |
+| 4 | Only the first text block holds the plan. Extra text blocks are ignored without any error. | `_parse_plan` `next(...)` | YES |
+| 5 | Test isolation: `test_well_formed_plan_is_returned_even_if_unsafe` writes into the module-level `RESPONSES` dict and never removes the entry, so state can leak between tests or reruns. | test file | YES |
+| 6 | One passing live run of TC-1 and TC-2 is taken as representative. The verification record shows each live test passing once (Run 3), with no repetition. | Verification record | NO (model nondeterminism, live cost) |
+
+### Invariant Coverage Gaps
+NONE. The task enforces no invariant directly. The touched points are tested: run-level `state_transition` with `attempt_id=None` (INV-D4) in TC-2 and the unsafe-plan test, no execution path (INV-S1) by the AST test, and the retryable split feeding INV-D1 by the HTTP and timeout tests. Findings 1–2 concern how the error split is classified, not enforcement of an invariant.
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| The orchestrator retries `AgentAPIError` without using up `attempts_used` | Task 4.1 (Session 4) |
+| Policy denies the unsafe plan proposed under PROMPT_INJECTION | Task 3.3 orchestrator / Session 2 funnel |
+| Live plan quality for MISSING_COLUMN, and run-to-run variance of live plans | Needs repeated live model calls (cost); ablation in Session 5 |
+| Live-API behaviour of real 429/529 or billing errors beyond the one observed 400 | External account and API state |
+
+### Challenge Verdict
+
+FINDINGS — 6 items need engineer disposition before commit.
+  Finding 1: A refusal (`PlanningError`) emits no trace event. TC-2's "reasoning captured regardless of what the agent proposes" is untested and unmet for the refusal path. Needs a test asserting refusal tracing, or an explicit ACCEPT.
+  Finding 2: `anthropic.APIError` subclasses outside timeout, connection and status errors (e.g. `APIResponseValidationError`) are not mapped to `AgentAPIError`. Testable with a stub `client` whose `messages.create` raises them.
+  Finding 3: The missing-table path in `_pipeline_snapshot` raises a raw `sqlite3.OperationalError`. The `'missing'` fallback can never be reached. Testable by dropping a pipeline table before calling `diagnose_and_plan`.
+  Finding 4: Whether the agent sees the injection payload depends on the seed. `LIMIT 50` has no `ORDER BY`, and only seed 21 is asserted. Testable by parametrizing seeds in `test_request_shape_and_context`.
+  Finding 5: The production `_client()` keeps the SDK defaults (2 hidden retries, about a 10-minute timeout), and no test checks this. Testable by inspecting `_client().max_retries` and `.timeout`.
+  Finding 6: The MISSING_COLUMN prompt and the "verification passes" branch are not exercised. Testable through the fake API.
+
+**Verdict:** FINDINGS — 6
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | No listed invariant. A refusal is not a proposal: `PlanningError` propagates to the orchestrator, which records the planning outcome on the attempt and in the trace (Task 3.3 / Session 4 loop) |
+| 2 | TEST (INV-D1 — the API-vs-planning split decides what consumes budget) | `_request` now also maps any other `anthropic.APIError` and a non-JSON body (`json.JSONDecodeError`, which the SDK raises raw) to retryable `AgentAPIError`; `_parse_plan` tolerates `content=None` (the SDK returns that for a wrong-shaped 200 body, which previously crashed with `TypeError`). Tests: `test_malformed_http_bodies_raise_agent_api_error` (non-JSON body, wrong shape), `test_any_other_sdk_api_error_is_an_agent_api_error`, `test_non_api_programming_errors_are_not_masked` (a `TypeError` is not turned into a retryable API error) | PASS |
+| 3 | ACCEPT | No listed invariant. Every injection rebuilds all three pipeline tables in one transaction, so a missing table is a corrupted environment; a raw `sqlite3` error is the correct loud failure |
+| 4 | ACCEPT | No listed invariant. `ROW_COUNT` is 12 for every seed, below the 50-row limit, so the poisoned record is always in the prompt |
+| 5 | ACCEPT | No listed invariant. SDK default retries (2) and timeout belong to the retry policy, which Task 4.1 owns; logged as an Out of Scope Observation |
+| 6 | ACCEPT | No listed invariant. MISSING_COLUMN prompts are exercised live by Task 3.3's verification (`run_scenario.py --scenario MISSING_COLUMN`); any non-`end_turn` stop reason is already rejected as malformed |
+
+### Code Review
+Task 3.2 enforces no invariant directly (agent proposes; harness enforces — ARCHITECTURE.md D1).
+Items to review in `src/agent_core.py` (results left blank):
+- Proposes only: no reference to `harness.attempt_action`, `pipeline_write` or
+  `execute_and_checkpoint`; reads the pipeline read-only.
+- API-level failures (timeout, connection, rate limit, 5xx, malformed / unparseable response)
+  raise `AgentAPIError`; a genuine planning failure (model refusal) raises `PlanningError`; a
+  well-formed plan is returned whatever its quality.
+- The agent never sees the injector's description (the answer); it sees the pipeline and
+  Verification's symptoms.
+- Model exactly `claude-sonnet-5` (Claude.md §4); only `ANTHROPIC_API_KEY` is read from `.env`.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 3.2
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S03.md, sessions/VERIFICATION_RECORD_S03.md,
+                    src/agent_core.py (new), src/env_file.py (new),
+                    tests/session3/test_agent_core.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/agent_core.py — init, diagnose_and_plan, _client, _request, _parse_plan,
+                    _scenario_type, _build_prompt, _pipeline_snapshot, _connect_read_only
+                    (+ Plan, AgentAPIError, PlanningError, PLAN_SCHEMA);
+                    src/env_file.py — load, _assignments
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE (`.gitignore` gained `.env` in 4e5989a, before this task)
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- Model `claude-sonnet-5` (Claude.md §4), `max_tokens` 8000, thinking left at the model
+  default (adaptive), non-streaming. The plan comes back as structured output
+  (`output_config.format` JSON schema: diagnosis, reasoning, tool, params_json). `params` is a
+  JSON *string*, because structured-output object schemas must be closed and the agent must
+  stay free to propose *any* action, even one Policy will deny.
+- The prompt describes the three repair tools neutrally and contains no anti-injection
+  instructions: safety is enforced in code (Policy, Validation), not by prompting, and the
+  Session 5 naive baseline uses the same model.
+- Context: scenario type, Verification's verdict and details, every pipeline table's columns
+  and up to 50 rows. Never the injector's description.
+- Trace: one run-level `state_transition` event (`stage: plan`, with diagnosis, reasoning,
+  proposed_action) per plan. attempt_id is None, because no attempt exists yet when planning.
+- `.env` loading: `src/env_file.py` (no third-party dotenv, which is not in the Fixed Stack)
+  reads only `ANTHROPIC_API_KEY` and never overrides the environment.
+- Error split: `AgentAPIError(retryable)` for every API-level failure (timeout, connection,
+  status, any other `anthropic.APIError`, non-JSON body) and every malformed response;
+  `PlanningError` for a refusal. An unknown run raises `ValueError` (a caller bug).
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

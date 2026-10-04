@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress
+**Status:** Integration check passed — merge pending
 
 ## Pre-Build Validation
 
@@ -85,7 +85,7 @@ authoritative (the prompt itself says "follow that document exactly").
 |---------|-----------|--------|--------|
 | 4.1 | Shared Attempt Budget & Re-plan Loop | Completed | 364d138 |
 | 4.2 | Crash-Resume Path | Completed | 3b9ab8c |
-| 4.3 | Concurrency Guard | Completed | see S4.3 commit |
+| 4.3 | Concurrency Guard | Completed | 436334e |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -141,10 +141,26 @@ Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)
 
 ---
 
+## Session Integration Check
+
+**Run:** 2026-10-04 at `436334e`. Ran the superset of the two definitions (see Pre-Build
+Validation): `docs/EXECUTION_PLAN.md`'s command plus the session prompt's
+`--assert-all-three-cases`.
+
+```bash
+python -m pytest tests/session4/ -v && python scripts/simulate_crash_resume.py --assert-idempotent --assert-all-three-cases
+```
+
+**Result:** exit 0. `tests/session4/`: 64 passed. `simulate_crash_resume.py`: 5 kill points (3 crash
+timings), with every run resumed to RECOVERED with exactly one application of the fix and attempts_used 1.
+Full regression `tests/` (live `claude-sonnet-5` tests included): 953 passed.
+
+---
+
 ## Session Completion
-**Session integration check:** [ ] PASSED
+**Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
 **PR raised:** [ ] Yes — PR #: [branch] → main
-**Status updated to:** 
-**Engineer sign-off:** 
+**Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
+**Engineer sign-off:** DEFERRED — engineer review at end of build

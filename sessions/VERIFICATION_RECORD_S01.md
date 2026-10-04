@@ -72,7 +72,7 @@ No BCE artifact impact.
 [ ] Code review complete (if invariant-touching)
 [ ] Scope decisions documented
 
-**Status:**
+**Status:** DEFERRED — engineer review at end of build
 
 ---
 
@@ -165,7 +165,7 @@ No BCE artifact impact.
 [ ] Code review complete (if invariant-touching)
 [ ] Scope decisions documented
 
-**Status:**
+**Status:** DEFERRED — engineer review at end of build
 
 ---
 
@@ -472,7 +472,7 @@ No BCE artifact impact.
 [ ] Code review complete (if invariant-touching)
 [ ] Scope decisions documented
 
-**Status:**
+**Status:** DEFERRED — engineer review at end of build
 
 ---
 
@@ -658,4 +658,4 @@ No BCE artifact impact.
 [ ] Code review complete (if invariant-touching)
 [ ] Scope decisions documented
 
-**Status:**
+**Status:** DEFERRED — engineer review at end of build

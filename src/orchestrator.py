@@ -23,6 +23,11 @@ The recovery loop (Task 4.1):
 A run always ends in a terminal status. If anything in the harness raises after the run exists, the
 run is completed UNRECOVERED (HARNESS_ERROR) and the exception is re-raised.
 
+Concurrency guard (Task 4.3, INV-S7): run_scenario creates its ScenarioRun exclusively — while
+another run is IN_PROGRESS against the shared pipeline it raises state_manager.RunInProgressError
+(naming that run) before anything is created or injected. Nothing is queued or overwritten; an
+interrupted run must be resumed (resume_run) or it keeps the pipeline locked.
+
 resume_run(scenario_run_id) (Task 4.2) continues a run interrupted by a crash, from exactly its last
 checkpoint (INV-S4): it traces what it found (last_stage, action_applied), finishes the in-flight
 attempt through harness.resume_attempt — which never re-executes an applied action — and then
@@ -85,7 +90,7 @@ def init(db_path, trace_path) -> None:
 
 def run_scenario(scenario_type: str, seed: int, client=None) -> ScenarioResult:
     """Inject scenario_type's failure, then plan and attempt fixes until recovered or stopped."""
-    run_id = state_manager.start_run(scenario_type)
+    run_id = state_manager.start_run(scenario_type, exclusive=True)  # INV-S7: RunInProgressError if one is live
     try:
         injection = failure_injector.inject(scenario_type, seed)
         state_manager.checkpoint(run_id, "run_started", {})

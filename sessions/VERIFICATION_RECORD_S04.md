@@ -376,3 +376,152 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 4.3 — Concurrency Guard
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Start a second scenario while one is IN_PROGRESS | Raises an explicit error | N/A | PASS |
+| TC-2 | Start a new scenario after the prior one reaches a terminal status | Succeeds | N/A | PASS |
+
+Verification command: `python -m pytest tests/session4/test_concurrency_guard.py -v`
+- Run 1: **11 passed** (exit 0). Whole suite without the live tests (with the guard in place):
+  940 passed.
+Beyond TC-1 and TC-2, the tests cover:
+- a rejected start creates no run, does not inject, leaves the live run's pipeline untouched
+  and queues nothing;
+- the error is a `CheckpointError` subclass naming the blocking run and the resume command;
+- a terminal run (RECOVERED or UNRECOVERED) releases the guard, and so does resuming the
+  blocking run to completion;
+- in 20 rounds of two threads racing an exclusive start, exactly one succeeded each time (check
+  and insert happen in one `BEGIN IMMEDIATE` transaction);
+- the non-exclusive primitive is unchanged;
+- AST: the orchestrator is the only creator of runs in `src/`, and always exclusive;
+- the CLI exits 3 naming the blocking run, and `--dry-run` (with its own throwaway database) is
+  not blocked.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S04 "Task 4.3"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S04 Task 4.3...
+I checked `src/state_manager.py`, `scripts/init_db.py`, `src/schema.sql`, and every `start_run` call site in `src/` and `scripts/`. Here is the report.
+
+## CC Challenge — Task 4.3 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S04
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | A run that ends through the HARNESS_ERROR path (an exception after the run exists, completed UNRECOVERED, then re-raised) or ends INFRASTRUCTURE_FAILURE, followed by a new `run_scenario`. TC-2 only reaches a terminal status through plan outcomes (a valid fix, or a DENY'd `upload_record`). | If either path leaves the row IN_PROGRESS (for example, the error-completion write fails or is skipped), the pipeline stays locked and every later start exits 3. Neither path is shown to release the guard. | INV-S7, INV-D5 |
+| 2 | A process killed after `start_run` commits but before the `run_started` checkpoint, or partway through `failure_injector.inject`. `_crashed_run` always writes `run_started` before acting as the blocker. | That run holds the pipeline. The only way out given is `resume_scenario.py --scenario-run-id N`. No test shows `resume_run` can finish a run with no checkpoint, so the pipeline could stay locked for good. | INV-S7, INV-S4 |
+| 3 | When the CLI rejects a start (exit 3), the test checks only the exit code and stderr. It does not check that ScenarioRun rows, pipeline tables, and `trace.jsonl` are unchanged. `run_and_report` calls `init_db.create_database` and `orchestrator.init` before the guard runs. | The "nothing created, nothing overwritten" claim is only proven for the orchestrator call (TC-1), not for the CLI. | INV-S7 |
+| 4 | The database already holds two or more IN_PROGRESS rows, for example from a non-exclusive `start_run` or a database created before the guard. | The guard reports the lowest id. That behaviour, and the resume-one-then-still-blocked flow, are untested. | INV-S7 |
+| 5 | The race test uses two threads in one process. The real case is two CLI processes, each with its own `state_manager` module state. | The claim that `BEGIN IMMEDIATE` makes the check and insert atomic is only shown within one process. The live demo surface is multi-process. | INV-S7 |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | Every run-creating call site goes through `orchestrator.run_scenario`. The guard is opt-in (`exclusive=False` by default), so the `start_run` primitive itself does not enforce INV-S7. `test_non_exclusive_start_is_unchanged_for_harness_internals` actually pins that a second IN_PROGRESS row *can* be created. | Default parameter value; that test | YES |
+| 2 | The AST test catches every creator of runs. It scans only `src/*.py` at the top level and only matches attribute-style calls (`x.start_run`). A bare `start_run(...)` call after `from state_manager import start_run`, any file in a subdirectory, and all of `scripts/` are invisible to it. Four scripts call `start_run` without `exclusive=True` (`scripts/emit_test_trace.py:33`, `scripts/simulate_deny_path.py:78`, `scripts/simulate_crash_resume.py:201`, `scripts/assert_write_scope_isolation.py:104`). Today they all use temporary databases, but nothing pins that. | `test_orchestrator_is_the_only_creator_and_always_exclusive` | YES |
+| 3 | Contention for the write lock always shows up as `RunInProgressError`. `_connect` uses sqlite3's default 5 s busy timeout. If another process holds the write lock longer than that, the error is `sqlite3.OperationalError: database is locked`. `run_and_report` doesn't catch it, so the CLI crashes with a traceback instead of exiting 3. | `src/state_manager.py:90` (no `timeout=` argument) | YES |
+| 4 | INV-S7 needs only a check at creation time; there is no schema-level backstop (such as a partial unique index on `status = 'IN_PROGRESS'`). | Schema changes: NONE | NO (the invariant names the creation guard as the enforcement point) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S7 (HARNESS_ERROR / INFRASTRUCTURE_FAILURE terminal paths release the guard) | YES | NO |
+| INV-S7 (CLI rejection leaves DB, pipeline and trace unchanged) | YES | NO |
+| INV-S7 (no creator of runs outside the orchestrator, including `scripts/` and bare-name calls) | YES | PARTIAL (AST test has blind spots) |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Two real `scripts/run_scenario.py` processes started at once against `data/harness.db` with the live API | Needs live API credentials and manual multi-terminal timing (demo session) |
+| `scripts/run_ablation.py` creating naive and harnessed runs against a shared DB under the guard | The ablation harness is built in a later session |
+| Killing the process at a real OS level between `start_run` commit and the `run_started` checkpoint | Needs external process kill. The logical equivalent (Scenario 2) can be tested in scope. |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: No test shows that a run ending HARNESS_ERROR (exception re-raised after UNRECOVERED completion) or INFRASTRUCTURE_FAILURE releases the guard so a following `run_scenario` succeeds. TC-2 covers only plan-driven RECOVERED and UNRECOVERED endings.
+  Finding 2: No test covers a blocking run with no `run_started` checkpoint (killed between `start_run` commit and checkpoint or injection), or shows that `resume_run` can finish it. If it can't, the pipeline stays locked for good, because resume is the only way out the error message gives.
+  Finding 3: `test_cli_reports_the_blocking_run` doesn't check that the rejected CLI start leaves ScenarioRun rows, pipeline state and `trace.jsonl` unchanged. `create_database` and `orchestrator.init` run before the guard.
+  Finding 4: INV-S7 depends on every creator passing `exclusive=True`, but the AST test misses bare-name `start_run` calls, `src/` subdirectories and `scripts/`, where four non-exclusive callers exist. Separately, write-lock contention beyond the default 5 s busy timeout surfaces as an uncaught `sqlite3.OperationalError` instead of exit 3.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | INV-S7 / D5 are not on the TEST list. HARNESS_ERROR and INFRASTRUCTURE_FAILURE complete the run through the same terminal checkpoint as every other ending (tested terminal in Tasks 3.3 / 4.1), and the guard only queries `status = 'IN_PROGRESS'` | N/A |
+| 2 | ACCEPT | INV-S7 / S4 are not on the TEST list. A run with no checkpoint and no attempt is handled by `resume_run`: it has no in-flight attempt, so it re-plans through the normal loop and ends terminal (`test_resume_before_any_plan_plans_afresh_without_reinjecting`), so the pipeline is never locked for good. Logged: such a run may be resumed against an un-injected pipeline | N/A |
+| 3 | ACCEPT | INV-S7 is not on the TEST list. `create_database` is idempotent (IF NOT EXISTS) and `orchestrator.init` only sets paths; the guard raises before any row, injection or trace line exists (proven at the orchestrator level in TC-1) | N/A |
+| 4 | ACCEPT | INV-S7 is not on the TEST list. The four `scripts/` callers are check scripts that only ever use temporary databases; production run creation is the orchestrator (pinned for `src/`). Lock contention beyond SQLite's 5-second busy timeout surfacing as a traceback is logged as an observation for the Session 5 ablation runner | N/A |
+
+### Code Review
+Invariant text is embedded in the Task 4.3 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review (results left blank):
+- INV-S7: at ScenarioRun creation (orchestrator), a new run is rejected while another is
+  IN_PROGRESS — the check and the insert happen in one write transaction (no race).
+- A clear error naming the blocking run; nothing is queued, overwritten or re-injected.
+- Resuming the IN_PROGRESS run itself remains possible.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 4.3
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S04.md, sessions/VERIFICATION_RECORD_S04.md,
+                    src/state_manager.py, src/orchestrator.py, scripts/run_scenario.py,
+                    tests/session4/test_concurrency_guard.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/state_manager.py — _require_no_run_in_progress (+ RunInProgressError)
+Functions modified: src/state_manager.py — start_run (optional exclusive); src/orchestrator.py —
+                    run_scenario (exclusive start); scripts/run_scenario.py — run_and_report (exit 3)
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- The guard sits at ScenarioRun creation in the orchestrator, as the prompt says, via
+  `state_manager.start_run(scenario_type, exclusive=True)`. The IN_PROGRESS check runs inside
+  the same `BEGIN IMMEDIATE` transaction as the insert, so concurrent starts cannot both
+  succeed. A separate check-then-create in the orchestrator would race.
+- `RunInProgressError(CheckpointError)` names the blocking run and the resume command. It is
+  raised before anything is created or injected, and nothing is queued or overwritten.
+- `start_run`'s default (non-exclusive) is unchanged for harness internals and tests; an AST
+  test pins that `src/orchestrator.py` is the only creator of runs and always passes
+  `exclusive=True`.
+- CLI: `run_scenario.py` prints the error and exits 3. `--dry-run` uses its own throwaway
+  database, so a live run never blocks it. `resume_scenario.py` is unaffected (resuming the
+  in-progress run is how the pipeline is released).
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

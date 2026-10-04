@@ -84,8 +84,8 @@ authoritative (the prompt itself says "follow that document exactly").
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
 | 4.1 | Shared Attempt Budget & Re-plan Loop | Completed | 364d138 |
-| 4.2 | Crash-Resume Path | Completed | see S4.2 commit |
-| 4.3 | Concurrency Guard | | |
+| 4.2 | Crash-Resume Path | Completed | 3b9ab8c |
+| 4.3 | Concurrency Guard | Completed | see S4.3 commit |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -125,6 +125,9 @@ Leave this table empty if the session was not resumed.
 |------|-------------|--------|--------------------|
 | 4.1 | EXECUTION_ERROR (a validated action failing against the pipeline, e.g. renaming a column that does not exist) ends the run instead of re-planning, because the Task 4.1 prompt lists only REJECTED and FAIL as re-plan triggers; its attempt keeps the consumed budget unit and no failure_reason (INV-D3 allows one only for REJECTED / FAIL) | MISSING | Consider adding EXECUTION_ERROR as a re-plan trigger in a planning update |
 | 4.1 | With API retries counted per planning call, one run can make up to (1 + 3) × 3 = 12 API requests in the worst case | FRAGILITY | Accept; revisit if cost matters in the ablation (Session 5) |
+| 4.3 | INV-S7 is enforced at creation by the orchestrator (`start_run(exclusive=True)`); the State Manager primitive and check scripts can still create non-exclusive runs (check scripts only on temporary databases). No schema-level backstop (e.g. a partial unique index on IN_PROGRESS) | FRAGILITY | Session 5's ablation runner must create runs through the orchestrator (or `exclusive=True`) |
+| 4.3 | Write-lock contention longer than SQLite's default 5-second busy timeout raises `sqlite3.OperationalError: database is locked` (a traceback) rather than `RunInProgressError` / exit 3 | FRAGILITY | Relevant only to concurrent processes, which are out of scope (Claude.md §1); revisit if the ablation runner parallelises |
+| 4.2/4.3 | A run killed between `start_run` and the end of injection is resumed by re-planning against whatever pipeline state exists (resume never re-injects, and the seed is not persisted) | FRAGILITY | Accept for MVP; persisting the seed on ScenarioRun would need a schema change |
 
 Nature values: BUG | MISSING | FRAGILITY
 Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)

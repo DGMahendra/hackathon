@@ -73,7 +73,7 @@ retroactively on 2026-10-02 against `Claude.md` v1.3 (repo root), after Task 1.2
 | 1.1 | Repository Scaffolding | Completed | b3939b6 (requirements.txt added in 35bc09d) |
 | 1.2 | SQLite Schema (ScenarioRun, Attempt, TraceEvent, PipelineState) | Completed | 6af742a, 35bc09d (planning-doc update: 72327d8) |
 | 1.3 | State Manager & Checkpointing | Completed | 0d56fc2 (planning-doc update: dfc8f17) |
-| 1.4 | Trace Logger | Completed | see S1.4 commit |
+| 1.4 | Trace Logger | Completed | 877e11f |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -107,7 +107,7 @@ the point of the BLOCKED stop. These fields are never pre-filled by the agent.
 | 1.3 | Stage a task's files with `git add` before the step 6 file-boundary check and the step 8 Challenge Agent | Engineer: `git diff HEAD` cannot see untracked files; staging first makes new files visible to both steps |
 | 1.3 | Finding 1, option (a): while `apply_fn` runs, a SQLite authorizer denies every transaction-control action (BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE). It is installed immediately before `apply_fn` and removed in a `finally` before `execute_and_checkpoint()` commits or rolls back | Engineer: "TEST 1 changed from a post-hoc conn.in_transaction guard to SQLite-authorizer prevention, because detection after apply_fn returns cannot undo an already-committed write. The in_transaction check stays as a backstop." |
 | Standing (from 1.3) | On any verification mismatch, stop and report. Never alter the artifact under test. | Engineer, 2026-10-04, after the de65a68 deviation: a mismatch is a finding to report, not something to fix |
-| 1.4 | INV-D4's "attempt_id when applicable": tool_call and policy_decision events require attempt_id; state_transition may omit it (run_started / run_complete are run-level) | Engineer: "INV-D4's 'attempt_id when applicable' interpreted as above; INVARIANTS.md wording clarification to be proposed at the Session 1 gate." |
+| 1.4 | INV-D4's "attempt_id when applicable": tool_call and policy_decision events require attempt_id; state_transition may omit it (run_started / run_complete are run-level) | Engineer: "INV-D4's 'attempt_id when applicable' interpreted as above; INVARIANTS.md wording clarification to be proposed at the Session 1 gate." Clarification applied in `docs/INVARIANTS.md` INV-D4 at the Session 1 gate (966ad0e). |
 
 ---
 
@@ -150,12 +150,12 @@ Engineer reviews at session sign-off and determines disposition.]
 | 1.3 | Task 2.4's prompt (`docs/EXECUTION_PLAN.md`) still says call `state_manager.checkpoint(..., stage='pre_execute')`, apply the action, then `checkpoint(..., stage='post_execute')` — contradicts revised Task 1.3 ("Task 2.4's funnel function must call execute_and_checkpoint()"); `checkpoint()` now rejects both execute stages | BUG | CLOSED — `docs/EXECUTION_PLAN.md` replaced with the engineer's canonical version (md5 2e457fb3fd068bac96cafb6a6558f21c, commit dfc8f17); Task 2.4 step (3) now calls `execute_and_checkpoint()` |
 | 1.3 | The new `execute_and_checkpoint()` rule that `apply_fn` must not return None is a State Manager contract not written in Task 1.3's prompt; Task 2.4's real `apply_fn` must return a non-None execution_result | MISSING | CLOSED — rule is in Task 2.4 step (3) of the replaced `docs/EXECUTION_PLAN.md` (commit dfc8f17) |
 | 1.3 | The authorizer mechanism in `execute_and_checkpoint()` could also enforce INV-S8's table-scope rule for Task 2.4: SQLite's INSERT / UPDATE / DELETE authorizer callbacks carry the table name, so writes outside the pipeline tables could be denied while `apply_fn` runs. Not implemented (engineer instruction, 2026-10-04) | MISSING | Task 2.4 can consider it when it is built |
-| 1.3 | `apply_fn` runs with access to the raw SQLite connection (directly, or via `cursor.connection`), so the authorizer guards against mistakes, not malice (Challenge run 2, Finding 1 — ACCEPT). `apply_fn` must be built only from allowlisted harness code with validated parameters. The agent must never supply callables or raw SQL executed verbatim | MISSING | Tasks 2.2 / 2.4 to enforce when built |
+| 1.3 | `apply_fn` runs with access to the raw SQLite connection (directly, or via `cursor.connection`), so the authorizer guards against mistakes, not malice (Challenge run 2, Finding 1 — ACCEPT). `apply_fn` must be built only from allowlisted harness code with validated parameters. The agent must never supply callables or raw SQL executed verbatim | MISSING | CLOSED — `docs/EXECUTION_PLAN.md` Tasks 2.2 and 2.4 now require harness-owned, allowlisted implementations with validated parameters; no agent-supplied callables or verbatim SQL (966ad0e) |
 | 1.3 | The Task 1.2 DB trigger `scenario_run_attempts_used_allow_only` does not forbid a decrease of `attempts_used` or a jump greater than 1 (only exceeding the ALLOW count). Both are now rejected only in `src/state_manager.py` (Challenge run 2, Finding 2) | FRAGILITY | Candidate for later schema hardening; `src/schema.sql` not modified per engineer instruction |
-| 1.3 | Task 4.1's INFRASTRUCTURE_FAILURE (`docs/EXECUTION_PLAN.md` lines 535, 543: UNRECOVERED with failure_reason = INFRASTRUCTURE_FAILURE) has no valid storage under the current schema. `failure_reason` lives on Attempt; the INV-D3 row CHECK allows it only when tool_validation_result = REJECTED or verification_result = FAIL; ScenarioRun has no such column. Task 1.3's per-stage allowlist must not be loosened (e.g. attempt fields without an attempt_id) to work around this | MISSING | Engineer decision needed before Session 4; no action now. Kept open — reconfirmed by engineer at Task 1.4 (2026-10-04) |
-| 1.4 | Nothing writes rows to the `TraceEvent` table. `docs/ARCHITECTURE.md` §8 calls TraceEvent "the append-only record that is serialized to the JSONL trace file"; Task 1.4's prompt specifies a JSONL append only, so `trace_logger.emit()` validates ids by reading ScenarioRun/Attempt and writes no row. The table and its INV-D4 foreign keys are unused | MISSING | Design decision for the Session 1 gate (engineer, 2026-10-04): JSONL-only, versus TraceEvent rows written inside the checkpoint transaction with JSONL as an export |
-| 1.4 | Trace id validation and the file append are not atomic with any State Manager write: an event can describe a transition whose checkpoint later rolls back, or a kill between a checkpoint and its emit leaves the transition untraced. INV-D4 (no orphan events) still holds, because rows are never deleted | FRAGILITY | Consider when gates start emitting (Session 2) |
-| 1.4 | Task 6.4's verification command (`docs/EXECUTION_PLAN.md` lines 842–843) runs plain `python -m json.tool` on multi-line JSONL trace files (`docs/traces/success_trace.jsonl`, `failure_trace.jsonl`). That fails with "Extra data" on the second line; it needs `--json-lines` | BUG | Fix in the batched docs sync at the Session 1 gate (engineer, 2026-10-04) |
+| 1.3 | Task 4.1's INFRASTRUCTURE_FAILURE (`docs/EXECUTION_PLAN.md` lines 535, 543: UNRECOVERED with failure_reason = INFRASTRUCTURE_FAILURE) has no valid storage under the current schema. `failure_reason` lives on Attempt; the INV-D3 row CHECK allows it only when tool_validation_result = REJECTED or verification_result = FAIL; ScenarioRun has no such column. Task 1.3's per-stage allowlist must not be loosened (e.g. attempt fields without an attempt_id) to work around this | MISSING | CLOSED — `docs/EXECUTION_PLAN.md` Task 4.1: UNRECOVERED plus a state_transition trace event with reason=INFRASTRUCTURE_FAILURE; no Attempt row carries failure_reason; ablation runner records the cause (966ad0e) |
+| 1.4 | Nothing writes rows to the `TraceEvent` table. `docs/ARCHITECTURE.md` §8 calls TraceEvent "the append-only record that is serialized to the JSONL trace file"; Task 1.4's prompt specifies a JSONL append only, so `trace_logger.emit()` validates ids by reading ScenarioRun/Attempt and writes no row. The table and its INV-D4 foreign keys are unused | MISSING | CLOSED — decided at the Session 1 gate: JSONL only for the MVP, TraceEvent table not populated; upgrade path parked (`docs/ARCHITECTURE.md` §8, `docs/INVARIANTS.md` INV-D4; 966ad0e) |
+| 1.4 | Trace id validation and the file append are not atomic with any State Manager write: an event can describe a transition whose checkpoint later rolls back, or a kill between a checkpoint and its emit leaves the transition untraced. INV-D4 (no orphan events) still holds, because rows are never deleted | FRAGILITY | CLOSED — accepted as a known limitation with mitigation: emit after commit (Task 2.4) and a resume reconciliation state_transition event (Task 4.2); `docs/ARCHITECTURE.md` §8 (966ad0e) |
+| 1.4 | Task 6.4's verification command (`docs/EXECUTION_PLAN.md` lines 842–843) runs plain `python -m json.tool` on multi-line JSONL trace files (`docs/traces/success_trace.jsonl`, `failure_trace.jsonl`). That fails with "Extra data" on the second line; it needs `--json-lines` | BUG | CLOSED — `docs/EXECUTION_PLAN.md` Task 6.4 now uses `python -m json.tool --json-lines` (966ad0e) |
 | 1.3 | `tools/challenge.sh` truncates the record section to 60 lines (`head -60`, unchanged from dg-os); longer task records reach the challenge agent incomplete | FRAGILITY | Accept, or raise the limit in a later engineer-approved adaptation |
 | 1.2 | Installed pytest 6.2.5 emits ~70 `ast.Str` DeprecationWarnings on Python 3.12 and will break on Python 3.14 | FRAGILITY | Pin a current pytest version in `requirements.txt` |
 
@@ -173,6 +173,21 @@ Leave this table empty if no out-of-scope items were noticed.
 | `requirements.txt` added to Scope Boundary's allowed repo-root files | Dependency file must live at repo root for standard tooling (Task 1.1) | v1.1 | 1.2 — 36/36 at 35bc09d |
 | `.gitignore` added to Scope Boundary's allowed repo-root files | Exclude `data/*.db*` from commits (Task 1.2 sign-off) | v1.2 | 1.2 — 36/36 at 35bc09d |
 | `sessions/` added as an allowed top-level directory | Oversight dating to Phase 5 — the six session execution prompt files were produced and referenced throughout `EXECUTION_PLAN.md`, but the directory was never added to Section 3's allowed list | v1.3 | None — no build code affected |
+
+---
+
+## Session Integration Check
+
+**Run:** 2026-10-04, at `877e11f`, after `data/harness.db` was deleted (gitignored) and rebuilt
+with `python scripts/init_db.py --db data/harness.db` (engineer instruction). Before
+deletion, the old database also reported `Schema OK`.
+
+```bash
+python -m pytest tests/session1/ -v && python scripts/verify_schema.py --db data/harness.db && python scripts/emit_test_trace.py | python -m json.tool
+```
+
+**Result:** exit 0. `tests/session1/`: 257 passed. `verify_schema.py`: `Schema OK: data\harness.db`.
+`emit_test_trace.py` printed one JSON line, which `json.tool` parsed.
 
 ---
 

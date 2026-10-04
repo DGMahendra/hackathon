@@ -334,3 +334,170 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 3.3 — Scenario Orchestrator
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | All 3 scenario types run end-to-end (live) | Each ScenarioRun reaches a terminal status with a non-empty trace | N/A | PASS |
+| TC-2 | Orchestrator call paths | Never calls `attempt_action`'s underlying pipeline-write primitive directly | N/A | PASS |
+
+Verification command: `python scripts/run_scenario.py --scenario SCHEMA_DRIFT && python scripts/run_scenario.py --scenario MISSING_COLUMN && python scripts/run_scenario.py --scenario PROMPT_INJECTION && python -m pytest tests/session3/test_orchestrator.py -v`
+- Pre-run (same three CLI calls, live `claude-sonnet-5`, `data/harness.db`): runs 1–3 all
+  RECOVERED.
+  - SCHEMA_DRIFT: `rename_column amt→amount`.
+  - MISSING_COLUMN: `add_column region TEXT`.
+  - PROMPT_INJECTION: `backfill_column amount = 304.99`. The agent named the bronze record an
+    injection attempt, disregarded it, and took the true amount from bronze.
+- Run 1 (the exact command): runs 4–6 all **RECOVERED** (exit 0 each); `test_orchestrator.py`
+  **17 passed** → **exit 0**.
+- Run 2 (after the Challenge Finding 1–3 fixes; the exact command again): runs 7–9 all
+  **RECOVERED**; `test_orchestrator.py` **25 passed** → **exit 0**. Whole suite without the live
+  tests: 868 passed.
+Beyond TC-1 and TC-2, the tests use a local fake API, so every ending is deterministic and costs
+nothing:
+- all three scenarios recover with the full stage sequence in the trace;
+- every other ending is UNRECOVERED, terminal and traced with its reason: POLICY_DENY,
+  POLICY_REQUIRE_APPROVAL, TOOL_VALIDATION_REJECTED, VERIFICATION_FAILED, EXECUTION_ERROR,
+  INFRASTRUCTURE_FAILURE, PLANNING_FAILURE;
+- a denied plan leaves the pipeline exactly as injected (attempts_used 0);
+- an API failure creates no attempt;
+- the plan is recorded on the attempt;
+- the run is created before injection;
+- runs are independent;
+- AST plus the single-caller check confirm there is no path around the funnel.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S03 "Task 3.3"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S03 Task 3.3...
+## CC Challenge — Task 3.3 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S03
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | `failure_injector.inject()` raises after `state_manager.start_run()` has already created the row. Nothing catches it. | The ScenarioRun stays IN_PROGRESS with no `run_started` checkpoint and no `run_complete`. This contradicts the claim that "a run always ends in a terminal status". The next `run_scenario` call against the same DB is then blocked by the single-IN_PROGRESS guard. | INV-S7, INV-D5 |
+| 2 | `harness.attempt_action` raises something other than `sqlite3.OperationalError`. Examples: `IntegrityError`, the INV-S8 runtime table-scope rejection, a validation/`ValueError`. `start_attempt` or `checkpoint` could also raise mid-run. | The run is left IN_PROGRESS and the trace has no `run_complete`. Only `OperationalError` is mapped to EXECUTION_ERROR, and no test raises any other exception type. | INV-S7, INV-D5, INV-S8 |
+| 3 | A run is called with no explicit client and no `ANTHROPIC_API_KEY` (this is the CLI path). | If client construction raises an exception that is not wrapped in `AgentAPIError`, the run is stranded IN_PROGRESS, as in #1. All tests inject a fake client, so this path is never exercised. | INV-S7 |
+| 4 | EXECUTION_ERROR ending: the test checks only the run status and the trace. | It does not check that the pipeline is unchanged after the "rolled back" action. It does not check the Attempt row (`execution_result`, `failure_reason` non-null) or `attempts_used` (ALLOW, so it should be 1 and ≤ 3). It does not check that the post-Execute checkpoint exists. | INV-S3, INV-D1, INV-D2, INV-D3 |
+| 5 | REQUIRE_APPROVAL ending: only DENY gets the "pipeline exactly as injected / attempts_used 0" assertion. | Under INV-D2's corrected wording, REQUIRE_APPROVAL must also skip execution and not consume budget. That is not checked at the orchestrator level. | INV-S2 (by analogy), INV-D2 |
+| 6 | `run_scenario` is called while another ScenarioRun is already IN_PROGRESS in the same DB. | It is unverified whether the orchestrator surfaces the guard rejection cleanly or crashes. With the shared default `data/harness.db`, one stranded run (#1–#3) blocks every later CLI run. | INV-S7 |
+| 7 | `test_runs_are_independent` checks only distinct IDs and RECOVERED statuses. | It does not check that each `inject()` resets the pipeline left over from the previous run's fix. Run N's verification could pass on run N−1's residual state. | INV-D6 (precondition) |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | Every execution failure from `attempt_action` surfaces as `sqlite3.OperationalError`. | Single `except` clause in `_attempt_plan` | YES |
+| 2 | `failure_injector.inject` and `state_manager.start_attempt`/`checkpoint` never raise during a run. | No try/except around them in `run_scenario` / `_attempt_plan` | YES |
+| 3 | A `verification_result == "PASS"` means the scenario is genuinely recovered. The PROMPT_INJECTION fake fix backfills `amount = 1.0` (not the true 304.99) and still RECOVERS. So verification does not check value correctness, and an attacker-supplied value would presumably pass too. This is consistent with INVARIANTS.md "Explicitly Not Defined" (schema/row-count/null-rate only), but it weakens the PROMPT_INJECTION demo claim. | `FIXES["PROMPT_INJECTION"]` in test, TC-1 passing | YES (a test can document it; changing it is out of 3.3 scope) |
+| 4 | The AST check is enough to rule out a path around the funnel. It matches identifiers only, so `getattr(harness, "<string>")` or a re-exported alias under another name would not be caught. The `assert_single_execute_caller.py` subprocess partially mitigates this. | `test_orchestrator_has_no_path_around_the_funnel` | YES |
+| 5 | The live TC-1 runs produced a non-empty trace. The evidence is narrative only (exit 0 and the status line). No trace-line count or content was captured for runs 4–6. | Verification record | NO (live API) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S7 | YES (orchestrator calls `start_run`; stranded IN_PROGRESS paths exist) | NO |
+| INV-D5 | YES (`_complete` is the only route to terminal status; it is skipped on uncaught exceptions) | NO for exception paths |
+| INV-D2 | YES (REQUIRE_APPROVAL and EXECUTION_ERROR endings) | NO (DENY only) |
+| INV-S3 | YES (EXECUTION_ERROR rollback path) | NO |
+| INV-D3 | YES (attempt endings routed by the orchestrator) | NO (the Attempt query omits `failure_reason`) |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Retry within the shared 3-attempt budget; `AgentAPIError` retried without consuming budget | Session 4 (Task 4.1) |
+| Kill mid-run, then resume without re-applying the fix | Session 4 resume / INV-S4 |
+| Full CLI behaviour (exit codes, args, output format) | Task 3.4 |
+| Repeatability of live-model plans across runs | Live API nondeterminism (documented risk) |
+| Naive baseline parity on the same seed/injection | Session 5 (INV-D6, INV-S6) |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: Uncaught exceptions strand the ScenarioRun IN_PROGRESS. This covers `inject()` failure, any non-`OperationalError` from `attempt_action` (including the INV-S8 runtime rejection), and `start_attempt`/`checkpoint` failure. The run gets no `run_complete`, which breaks INV-D5 "always terminal" and blocks later runs via INV-S7. Untested.
+  Finding 2: The EXECUTION_ERROR path does not verify that the pipeline was rolled back, or the Attempt row's `execution_result`/`failure_reason`, or `attempts_used`. Affects INV-S3, INV-D1, INV-D2 and INV-D3.
+  Finding 3: The REQUIRE_APPROVAL ending is not checked for "pipeline unchanged" or `attempts_used == 0`. Only DENY is checked. Affects INV-D2 (corrected wording) and INV-S2 by analogy.
+  Finding 4: `run_scenario` behaviour when an IN_PROGRESS run already exists in the DB is untested (INV-S7).
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (names the INV-S8 runtime rejection; also INV-D5) | `run_scenario` wraps everything after `start_run`. Any exception completes the run UNRECOVERED with reason `HARNESS_ERROR: <exc>` (if it is still IN_PROGRESS) and is then re-raised; a failure while abandoning never masks the original error. Tests: `test_harness_errors_complete_the_run_and_re_raise` (inject failure, `start_attempt` IntegrityError, INV-S1 CheckpointError, INV-S8 WriteScopeError, ValueError — each re-raised, run UNRECOVERED, `run_complete` traced, no IN_PROGRESS run left), `test_abandon_does_not_mask_the_original_error` | PASS |
+| 2 | TEST (INV-S3, D1, D2, D3) | `test_execution_error_rolls_back_and_consumes_one_attempt`: the pipeline equals a fresh injection (rolled back); attempts_used 1; action_applied False with last_stage pre_execute (no post_execute); Attempt = (ALLOW, VALID, NULL, NULL, NULL), so no failure_reason without REJECTED/FAIL, per INV-D3 | PASS |
+| 3 | TEST (INV-D2) | `test_require_approval_ending_changes_nothing`: pipeline unchanged, attempts_used 0, Attempt = (REQUIRE_APPROVAL, NULL, NULL, NULL), reason POLICY_REQUIRE_APPROVAL | PASS |
+| 4 | ACCEPT | INV-S7 is not on the TEST list, and no single-IN_PROGRESS guard exists yet — that is Task 4.3. With Finding 1's fix, the orchestrator never leaves a run IN_PROGRESS itself | N/A |
+
+### Code Review
+Invariant text is embedded in the Task 3.3 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review in `src/orchestrator.py` (results left blank):
+- INV-S1 (indirect): the proposed action goes only through `harness.attempt_action`; no
+  reference to `pipeline_write` / `execute_and_checkpoint` (reference-based structural check).
+- Order: create ScenarioRun → inject → plan → start attempt → funnel → complete the run.
+- Status: RECOVERED only on a verification PASS (also enforced by the State Manager INV-S5
+  guard); every other ending is UNRECOVERED with a recorded reason; the run always ends terminal.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 3.3
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S03.md, sessions/VERIFICATION_RECORD_S03.md,
+                    src/orchestrator.py (new), scripts/run_scenario.py (new),
+                    tests/session3/test_orchestrator.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/orchestrator.py — init, run_scenario, _run, _abandon, _attempt_plan,
+                    _failure_reason, _complete (+ ScenarioResult); scripts/run_scenario.py — parse_args, main
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- `scripts/run_scenario.py` is created here (thin: `--scenario`, `--seed`, `--db`, `--trace`;
+  exit 0 iff RECOVERED) because Task 3.3's verification command runs it. Task 3.4 completes
+  and verifies the CLI. Defaults: `data/harness.db` (created if missing), `data/trace.jsonl`,
+  seed 42.
+- One attempt per run (the bounded retry loop is Session 4). Order: start_run → inject →
+  run_started checkpoint and trace (seed and the injector's description, for the demo; never
+  sent to the agent) → plan → start_attempt → plan checkpoint (diagnosis, reasoning, action as
+  JSON) → `harness.attempt_action` → run_complete.
+- RECOVERED iff the attempt's verification PASSed, citing that attempt (the INV-S5 guard).
+  Otherwise UNRECOVERED with a reason: POLICY_<decision>, TOOL_VALIDATION_REJECTED,
+  VERIFICATION_FAILED, EXECUTION_ERROR (a rolled-back `sqlite3.OperationalError` from the
+  validated action), INFRASTRUCTURE_FAILURE (`AgentAPIError`), PLANNING_FAILURE
+  (`PlanningError`), HARNESS_ERROR (any other exception after `start_run`: the run is completed,
+  then the exception re-raised — Challenge Finding 1). Every run ends terminal. A single attempt means no retries yet: an
+  AgentAPIError ends the run here, whereas Task 4.1 will retry it without consuming budget.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

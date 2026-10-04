@@ -85,8 +85,8 @@ INV-D6 (Session 5) is supported by making `inject(scenario_type, seed)` fully re
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
 | 3.1 | Failure Injector (3 scenarios) | Completed | 3534810 |
-| 3.2 | Agent/Planner Core Loop | Completed | see S3.2 commit |
-| 3.3 | Scenario Orchestrator | | |
+| 3.2 | Agent/Planner Core Loop | Completed | 4d717c6 |
+| 3.3 | Scenario Orchestrator | Completed | see S3.3 commit |
 | 3.4 | CLI Entry Point | | |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
@@ -112,6 +112,7 @@ Leave this table empty if the session was not resumed.
 |------|---------------|-----------|
 | Session 3 | Challenge Agent findings dispositioned by CC (TEST for INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT others with rationale); no second challenge run per task | Engineer standing instruction, 2026-10-04 |
 | Session 3 | Agent model `claude-sonnet-5`, exactly as Claude.md §4 fixes it | Claude.md §4; ID verified valid via the Claude API reference |
+| 3.3 | `scripts/run_scenario.py` created in Task 3.3 (thin CLI), completed in Task 3.4 | Task 3.3's verification command runs it, though Task 3.4's prompt defines it — a sequencing gap in `docs/EXECUTION_PLAN.md`, resolved without changing either prompt |
 | 3.2 | Commit 4e5989a (`.gitignore` excludes `.env`) was made by a CC command the engineer rejected in the UI — the command had already run. Kept because it only protects the engineer's key from being committed | Disclosed to the engineer on resume; revert on request |
 
 ---
@@ -135,6 +136,7 @@ Leave this table empty if the session was not resumed.
 | 3.1 | `inject()` / `pipeline_state()` connect with plain `sqlite3.connect`, so an uninitialised or mistyped path silently creates a new database file | FRAGILITY | The orchestrator initialises every module from one path (Task 3.3) |
 | 3.2 | The production Anthropic client keeps SDK defaults (2 automatic retries, ~10-minute timeout). Combined with Task 4.1's infrastructure retries, one AgentAPIError can hide several requests and a long wait | MISSING | Task 4.1 sets the retry/timeout policy explicitly |
 | 3.2 | A `PlanningError` (model refusal) leaves no trace event; only successful plans are traced | MISSING | Task 3.3 orchestrator / Session 4 loop records the planning outcome |
+| 3.3 | Verification checks schema, row count and null rate only (`docs/INVARIANTS.md` "Explicitly Not Defined"), not values. A PROMPT_INJECTION backfill of any non-NULL value — including an attacker-chosen one — passes. Live runs backfilled the true amount from bronze (304.99), but nothing enforces that | FRAGILITY | Accept for MVP; state it plainly in the demo and threat model (Session 6) |
 
 Nature values: BUG | MISSING | FRAGILITY
 Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)

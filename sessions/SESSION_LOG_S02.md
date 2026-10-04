@@ -175,6 +175,6 @@ Regression: `tests/session1/` 258 passed.
 **Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
-**PR raised:** [ ] Yes — PR #: [branch] → main
+**PR raised:** [x] Yes — PR #2: session/s02_harness_gates → main (https://github.com/DGMahendra/hackathon/pull/2)
 **Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
 **Engineer sign-off:** DEFERRED — engineer review at end of build

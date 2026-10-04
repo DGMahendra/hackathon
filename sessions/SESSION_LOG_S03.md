@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress
+**Status:** BLOCKED at Task 3.2 — ANTHROPIC_API_KEY not set (engineer standing instruction)
 
 ## Pre-Build Validation
 
@@ -84,8 +84,8 @@ INV-D6 (Session 5) is supported by making `inject(scenario_type, seed)` fully re
 
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
-| 3.1 | Failure Injector (3 scenarios) | Completed | see S3.1 commit |
-| 3.2 | Agent/Planner Core Loop | | |
+| 3.1 | Failure Injector (3 scenarios) | Completed | 3534810 |
+| 3.2 | Agent/Planner Core Loop | BLOCKED | none |
 | 3.3 | Scenario Orchestrator | | |
 | 3.4 | CLI Entry Point | | |
 
@@ -119,6 +119,7 @@ Leave this table empty if the session was not resumed.
 | Task | Deviation observed | Action taken |
 |------|--------------------|--------------|
 | Session start | Engineer waived per-session review and Pre-Build CONFIRMED waits; review deferred to end of build. | Pre-Build Validation recorded and the session proceeded without a CONFIRMED wait; sign-off fields set to "DEFERRED — engineer review at end of build"; no engineer-verified/reviewed checkbox ticked by CC |
+| 3.2 | SESSION BLOCKED (2026-10-04) before Task 3.2 started: `ANTHROPIC_API_KEY` is not set in this environment (checked for presence only; value never read or set), and the `anthropic` SDK is not installed. Task 3.2's verification (`tests/session3/test_agent_core.py`, which needs a live `claude-sonnet-5` call for its planning test cases), Task 3.3's (`run_scenario.py` for all three scenarios) and the Session Integration Check all need live model calls | Stopped per the engineer's standing instruction (missing ANTHROPIC_API_KEY when Session 3 needs it). Task 3.1 is committed (3534810); branch pushed as a backup; no PR, no merge. To resume: set ANTHROPIC_API_KEY in the project's environment and install requirements (`pip install -r requirements.txt`) |
 
 ---
 

@@ -95,8 +95,8 @@ recorded below are discrepancies or gaps, not conflicts.
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
 | 2.1 | Policy Layer | Completed | 09739c6 |
-| 2.2 | Tool Validation | Completed | see S2.2 commit |
-| 2.3 | Deterministic Verification | | |
+| 2.2 | Tool Validation | Completed | ea09e4f |
+| 2.3 | Deterministic Verification | Completed | see S2.3 commit |
 | 2.4 | Execute Funnel Function | | |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
@@ -136,6 +136,8 @@ Leave this table empty if the session was not resumed.
 
 | Task | Observation | Nature | Recommended action |
 |------|-------------|--------|--------------------|
+| 2.3 | `verification._expectations` is an in-process registry. After a kill and restart, a resumed process must re-register the scenario expectations before verifying, or every check fails closed (safe, but a resumed run could not recover) | FRAGILITY | Session 3 scenario definitions register on import; Session 4 resume must import them |
+| 2.3 | "verification_result comes only from verify()" is enforced structurally (only `harness.py` may checkpoint the verification stage), not at runtime — `state_manager.checkpoint` still accepts a caller-supplied PASS | FRAGILITY | Accepted for MVP; the INV-S5 RECOVERED guard additionally requires an applied ALLOW attempt |
 
 Nature values: BUG | MISSING | FRAGILITY
 Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)

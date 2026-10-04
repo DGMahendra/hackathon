@@ -303,3 +303,169 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 2.3 — Deterministic Verification
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Correctly fixed schema-drift scenario | PASS | N/A | PASS |
+| TC-2 | Column still missing after an attempted fix | FAIL with reason | N/A | PASS |
+| TC-3 | Row count outside the expected bounds | FAIL with reason | N/A | PASS |
+
+Verification command: `python -m pytest tests/session2/test_verification.py -v`
+- Run 1: **47 passed** (exit 0). Whole suite (`tests/`): 621 passed (Session 1's 257 still
+  pass with the new INV-S5 guard in `src/state_manager.py`).
+- Run 2 (after the Challenge Finding 1–3 fixes): 2 existing tests failed as expected — they
+  recorded PASS on an attempt that never executed, which Finding 2's guard now rejects. The
+  helper was changed to drive real execution.
+- Run 3: **76 passed** (exit 0). Whole suite: 650 passed.
+Beyond TC-1 to TC-3, the tests cover: unfixed drift fails; row-count boundaries (0, 2, 3, 10,
+11, 50); the null-rate threshold, which is inclusive; wrong column type; an untyped column
+checks presence only; every failure is reported together; a missing table; a missing
+expectation fails closed for every scenario type; expectations are per scenario type; an
+unknown run, a missing database or a corrupt database raise `VerificationError` (not a
+verdict), and the missing database is not created; invalid expectations are rejected (10
+shapes, including harness tables and an injected column name); verify takes only
+scenario_run_id, never writes, and opens the database read-only; only the funnel
+(`harness.py`) may checkpoint the verification stage. INV-S5 guard: RECOVERED is accepted
+with a passing attempt and rejected with FAIL or no verification (database unchanged),
+without attempt_id, citing another run's attempt, or citing a non-passing attempt when an
+earlier one passed; UNRECOVERED needs no verification; verify() drives recovery end to end.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S02 "Task 2.3"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S02 Task 2.3...
+## CC Challenge — Task 2.3 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S02
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | Once a run is RECOVERED, a new `"verification"` checkpoint on the same attempt sets `verification_result` from PASS to FAIL. Nothing in `src/state_manager.py` stops this. The INV-D5 terminal trigger only blocks status changes, not Attempt updates. | The run ends up RECOVERED with no passing attempt. That breaks INV-S5's own detection rule ("every RECOVERED run has ≥1 Attempt with verification_result = PASS"). The guard only checks at the moment status is written, never afterwards. | INV-S5 |
+| 2 | RECOVERED is accepted for an attempt that has PASS recorded but was never executed: no `post_execute`, no `tool_validation`. The policy decision may even be DENY or REQUIRE_APPROVAL. `_require_verified_for_recovery` reads only `verification_result`. The accepted-path test (`_attempt_with_verification(run_id, "PASS")`) itself records PASS with no execution, which shows the gap rather than testing it. | "Verification passes for that attempt" is satisfied by a bare column value, not by a verification that followed an executed recovery. | INV-S5, INV-S2 |
+| 3 | The `"verification"` stage takes any caller-supplied `verification_result` ("PASS"). Nothing at runtime ties the value to a `verify()` call. The only protection is the static AST test. | The INV-S5 guard trusts a column that any caller of `sm.checkpoint` can set. "Sole authority" holds only by convention. | INV-S5 |
+| 4 | `test_only_the_funnel_records_verification_results` only matches a positional constant second argument. A call like `checkpoint(run, stage="verification", ...)` or `checkpoint(run, STAGE_VAR, ...)` is not detected. The check is also `<= {"harness.py"}`, which passes trivially today because no caller exists yet. | The structural guard can be bypassed by changing the call syntax, so it does not actually enforce "only the funnel". | INV-S5 |
+| 5 | Malformed `Expectation.columns` entries (a bare string, a 1-tuple or 3-tuple, a non-string type) are not tested. `_expectation_problem` unpacks `for name, _ in ...` and would raise `ValueError`/`TypeError` instead of `VerificationError`. `_check_schema` calls `declared.upper()` on a non-string type and would raise `AttributeError` at verify time. | Registration-time validation is meant to reject bad shapes. Instead, some bad shapes fail with the wrong exception, and some get through and break `verify()` later. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | A PASS stored on the Attempt row stays valid for the life of the run (it is checked once, when status is written). | `_require_verified_for_recovery` runs only on the RECOVERED write; `verification` stage writes have no terminal-state or immutability guard. | YES |
+| 2 | Any PASS in `verification_result` came from `verify()`. | `STAGE_FIELDS["verification"]` accepts the value as given; there is no provenance check. | YES (runtime behaviour can be shown; enforcing provenance is a design choice) |
+| 3 | An exact uppercase string match on SQLite declared types is the right schema check. For example, `DOUBLE`, `FLOAT` or `REAL ` with trailing spaces would FAIL against `REAL`, even though SQLite gives them the same affinity. | `_check_schema` compares `actual[name] != declared.upper()`. | YES |
+| 4 | `min_rows`/`max_rows` are ints and `max_null_rate` is numeric. A bool, a float or a string passes or crashes unpredictably. | `_expectation_problem` only checks ranges, not types. | YES |
+| 5 | Row count and per-column null counts come from one consistent snapshot. They are separate statements with no explicit read transaction. | `_check_rows` runs separate `SELECT`s. | NO (needs a concurrent writer; INV-S7 / Task 2.4) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S5 (no RECOVERED run without a passing attempt after the status write) | YES | NO |
+| INV-S5 (a PASS must come from `verify()`, not from any checkpoint caller) | YES | NO (static AST test only, and it can be bypassed) |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| The expectation registry is per-process. After a kill and restart, `resume_scenario.py` starts with an empty registry, so every check fails closed unless the scenario definitions re-register. | Needs the Session 3 scenario definitions and the resume CLI |
+| The funnel actually writes `verify()` output (status and `failure_reason`) to the Attempt row, and calls `verify()` only after `post_execute`. | Task 2.4 (`harness.py` does not exist yet) |
+| `verify()` called while the execute transaction is still open would read pre-commit state. | Task 2.4 funnel ordering |
+| Real SCHEMA_DRIFT, MISSING_COLUMN and PROMPT_INJECTION expectations are correct for the real PipelineState columns. | Session 3 |
+| The naive baseline cannot reach `verification.py`. | INV-S6 / ablation session |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: A RECOVERED run's passing attempt can later be re-checkpointed to `verification_result = FAIL`. This leaves a RECOVERED run with no PASS attempt, which violates INV-S5's stated detection rule. Add a test, and a guard that rejects attempt-field writes on terminal runs or rejects overwriting a recorded verification result.
+  Finding 2: The INV-S5 guard accepts RECOVERED for an attempt with PASS recorded but no `post_execute`, and even with `policy_decision` DENY or REQUIRE_APPROVAL. Either add a test showing this is rejected, or accept it with rationale.
+  Finding 3: The static caller test for the `"verification"` stage misses keyword and variable stage arguments, and it passes trivially because there are no callers yet. Tighten it to cover `stage=` keywords and non-constant stage arguments, or record the limitation.
+  Finding 4: Malformed `Expectation.columns` entries (non-pairs, non-string declared types) raise `ValueError`/`TypeError` at registration or `AttributeError` inside `verify()` instead of `VerificationError`. Add those shapes to `test_invalid_expectation_rejected` and fix the validation to match.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (INV-S5) | `src/state_manager.py`: `_require_in_progress` makes a terminal run (RECOVERED / UNRECOVERED) accept no further checkpoints, attempts or executions; `_require_verification_write_once` rejects overwriting a recorded verification_result. Tests: `test_terminal_run_rejects_attempt_writes` (4), `test_terminal_run_rejects_new_attempts_and_run_writes` (2), `test_terminal_run_rejects_execute`, `test_verification_result_is_write_once` (3), `test_every_recovered_run_keeps_a_passing_attempt` (runs INV-S5's own detection query). Each rejection leaves the database unchanged. Mutation check: removing either guard fails 7 and 3 tests respectively | PASS |
+| 2 | TEST (INV-S5, INV-S2) | `_require_verified_for_recovery` now requires the cited attempt's (policy_decision, action_applied, verification_result) to be exactly (ALLOW, True, PASS). Tests: `test_recovered_rejected_for_unexecuted_attempt_even_with_pass` (DENY, REQUIRE_APPROVAL, ALLOW-but-not-applied — all with PASS recorded), `test_recovered_accepted_only_for_allow_applied_pass`. The test helper now drives real ALLOW → VALID → `execute_and_checkpoint` → verification flows. Mutation check: removing the guard fails 8 tests | PASS |
+| 3 | TEST (INV-S5) | The structural scan (`_checkpoint_stage_problems`) flags any `checkpoint()` call whose stage is "verification" or cannot be determined statically (keyword `stage=`, variables, expressions, f-strings, `*args`, `**kwargs`); allowed only in `harness.py`. Positive controls: `test_caller_scan_flags_verification_or_unknown_stage` (10 forms); negatives: `test_caller_scan_ignores_other_stages_and_calls` (4). Task 2.4 will add the positive check that `harness.py` is the caller | PASS |
+| 4 | ACCEPT | Not on the TEST list. Expectations are registered by harness code (Session 3 scenario definitions), never from agent input; a malformed one fails loudly, at registration or on the first `verify()`, rather than producing a wrong verdict | N/A |
+
+### Code Review
+Invariant text is embedded in the Task 2.3 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review (results left blank):
+- INV-S5: `src/verification.py` is the sole authority for verification_result — it decides
+  from database state only (no agent input reaches it) and never writes.
+- INV-S5 status-write guard (`src/state_manager.py`): a checkpoint setting status RECOVERED
+  is rejected unless it names an attempt of that run whose verification_result is PASS.
+- Checks: expected schema present on the target table, row count within bounds, null rate
+  of required columns at or below the threshold; a missing expectation fails closed.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 2.3
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S02.md, sessions/VERIFICATION_RECORD_S02.md,
+                    src/verification.py (new), src/state_manager.py,
+                    tests/session2/test_verification.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/verification.py — init, register_expectation, verify, _run_checks,
+                    _expectation_problem, _scenario_type, _table_columns, _check_schema,
+                    _check_rows (+ Expectation, VerificationResult, VerificationError);
+                    src/state_manager.py — _require_verified_for_recovery,
+                    _require_in_progress, _require_verification_write_once
+Functions modified: src/state_manager.py — _write_checkpoint (calls the three guards),
+                    start_attempt (rejects terminal runs)
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- Expectations come from a registry keyed by scenario_type (`register_expectation`), because
+  real PipelineState columns are decided in Session 3 (Task 1.2's prompt). Session 3's
+  scenario definitions register them; Session 2 tests register fixtures. A scenario type
+  with no registered expectation → FAIL (fail closed). Registering again replaces the
+  expectation.
+- `Expectation(table, columns=((name, declared_type or None), ...), min_rows, max_rows,
+  max_null_rate)`. Validated on registration: PipelineState table only, identifier column
+  names, 0 ≤ min ≤ max, null rate within [0, 1].
+- Null-rate threshold is inclusive (rate ≤ max_null_rate); with zero rows the null rate is 0
+  and the row-count check decides. All checks run and all failures are reported.
+- `VerificationResult(status, details)`; `failure_reason` is None on PASS and the joined
+  details on FAIL, matching INV-D3.
+- Database errors and unknown runs raise `VerificationError` (chained), never a PASS or FAIL.
+- INV-S5's enforcement point is a "status-write guard". The only status write path is
+  `src/state_manager.py`, so the guard lives there: status RECOVERED requires an attempt_id
+  of that run that is ALLOW-decided, applied and verified PASS ("for that attempt",
+  Challenge Finding 2). A terminal run accepts no further writes, and verification_result is
+  write-once (Finding 1), so a RECOVERED run can never lose its passing attempt.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

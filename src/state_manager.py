@@ -9,6 +9,11 @@ This module is the only write path to the ScenarioRun and Attempt tables.
 - INV-S4: resume() reads persisted checkpoint state only; action_applied is True iff
   the post_execute checkpoint exists, and execute_and_checkpoint() refuses to
   re-invoke an action already marked applied.
+- INV-S5: a checkpoint may set status RECOVERED only if it names an attempt of that run
+  that was ALLOW-decided, actually applied (post_execute committed) and verified PASS (the
+  status-write guard; Task 2.3). A recorded verification_result is write-once, and a
+  terminal run accepts no further checkpoints or attempts, so a RECOVERED run can never
+  lose its passing attempt.
 - INV-D2 write ordering: within one checkpoint, Attempt fields (policy_decision) are
   written before ScenarioRun.attempts_used, in the same transaction; an attempts_used
   increase is accepted only in the checkpoint that first records policy_decision=ALLOW.
@@ -102,6 +107,7 @@ def start_attempt(scenario_run_id: int) -> int:
     """Create an Attempt whose attempt_number is the run's current attempts_used; return its id."""
     with _transaction() as conn:
         run = _read_run(conn, scenario_run_id)
+        _require_in_progress(run)
         cur = conn.execute(
             "INSERT INTO Attempt (scenario_run_id, attempt_number) VALUES (?, ?)",
             (scenario_run_id, run["attempts_used"]),
@@ -206,7 +212,10 @@ def _require_apply_contract(conn, result) -> None:
 def _write_checkpoint(conn, scenario_run_id: int, stage: str, state: dict) -> None:
     """Write Attempt fields first, then ScenarioRun fields (INV-D2 ordering)."""
     attempt_id = state.get("attempt_id")
+    _require_in_progress(_read_run(conn, scenario_run_id))
     _require_increment_with_allow(conn, scenario_run_id, state)
+    _require_verification_write_once(conn, scenario_run_id, state)
+    _require_verified_for_recovery(conn, scenario_run_id, state)
     if attempt_id is not None:
         _write_attempt(conn, scenario_run_id, attempt_id, stage, state)
     _write_run(conn, scenario_run_id, state)
@@ -225,6 +234,37 @@ def _require_increment_with_allow(conn, scenario_run_id: int, state: dict) -> No
     attempt = _read_attempt(conn, scenario_run_id, state["attempt_id"])
     if attempt["policy_decision"] is not None:
         raise CheckpointError(f"INV-D2: attempt {attempt['id']} already has a recorded policy_decision")
+
+
+def _require_in_progress(run) -> None:
+    """Raise if the run is terminal: a finished run accepts no checkpoints or attempts (INV-D5, INV-S5)."""
+    if run["status"] != "IN_PROGRESS":
+        raise CheckpointError(f"INV-D5: scenario_run {run['id']} is {run['status']}; it accepts no further writes")
+
+
+def _require_verification_write_once(conn, scenario_run_id: int, state: dict) -> None:
+    """Raise if the checkpoint would overwrite an attempt's recorded verification_result (INV-S5)."""
+    if "verification_result" not in state or state.get("attempt_id") is None:
+        return
+    attempt = _read_attempt(conn, scenario_run_id, state["attempt_id"])
+    if attempt["verification_result"] is not None:
+        raise CheckpointError(f"INV-S5: attempt {attempt['id']} already has a recorded verification_result")
+
+
+def _require_verified_for_recovery(conn, scenario_run_id: int, state: dict) -> None:
+    """Raise unless a RECOVERED status names an attempt of this run that was ALLOW-decided,
+    applied and verified PASS (INV-S5 — the agent never self-declares success)."""
+    if state.get("status") != "RECOVERED":
+        return
+    if state.get("attempt_id") is None:
+        raise CheckpointError("INV-S5: status RECOVERED requires the attempt_id whose verification passed")
+    attempt = _read_attempt(conn, scenario_run_id, state["attempt_id"])
+    evidence = (attempt["policy_decision"], _checkpoint_progress(attempt)["action_applied"], attempt["verification_result"])
+    if evidence != ("ALLOW", True, "PASS"):
+        raise CheckpointError(
+            f"INV-S5: attempt {attempt['id']} is not an applied, verified recovery "
+            f"(policy_decision, action_applied, verification_result) = {evidence}"
+        )
 
 
 def _is_single_step_increase(current: int, new: int) -> bool:

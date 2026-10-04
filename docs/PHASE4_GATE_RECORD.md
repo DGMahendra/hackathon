@@ -162,3 +162,32 @@ augmentations (INV-S3, INV-D6), 0 gate failures.**
 **Step 2 ownership confirmation:** PASS
 **Step 2b invariant failure mode review:** PASS — all 14 invariants reviewed
 **Signed:** Mahendra Nayak (Team Lead) — 2026-09-12
+
+---
+
+## Post-Gate Addendum (2026-10-02, during Phase 6 build)
+
+**INV-D2 wording correction.** At Step 2b (above), INV-D2 was reviewed and passed
+under its original wording: "An Attempt with policy_decision = DENY does not
+increment attempts_used." During Phase 6, Task 1.2 (database schema implementation),
+Claude Code correctly identified that this wording only named DENY, leaving
+REQUIRE_APPROVAL able to legally increment attempts_used under the letter of the
+invariant — even though the same non-execution logic clearly applies to both. This
+was a documentation gap, not an implementation bug: the database guard built at Task
+1.2 correctly implemented the invariant exactly as written; the written invariant was
+incomplete.
+
+**Resolution:** INV-D2 has been corrected in `INVARIANTS.md` to cover both DENY and
+REQUIRE_APPROVAL. The correction was proposed by CD, confirmed by the engineer, and
+implemented in the Task 1.2 database trigger (`scenario_run_attempts_used_allow_only`,
+permitting increments only for ALLOW-decided Attempts), verified by 36/36 passing
+tests including the new REQUIRE_APPROVAL and mixed-decision cases. `EXECUTION_PLAN.md`
+Tasks 1.2, 2.4, and 4.1 are updated accordingly.
+
+**Why this doesn't reopen the full Phase 4 gate:** This is a narrow wording
+correction to an already-reviewed invariant's scope, not a newly-discovered
+security-critical gap of the kind that produced INV-S8. The original Step 2b review
+of INV-D2's *underlying logic* (preventing non-executed decisions from consuming
+budget) was sound — only the literal text was underinclusive. No adversarial stress
+test or new blast-radius analysis is required; the fix is recorded here for audit
+transparency rather than triggering a full re-run of Steps 1, 2, and 2b.

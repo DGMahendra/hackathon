@@ -86,7 +86,8 @@ Attempt(id, scenario_run_id, attempt_number, plan, policy_decision,
 tool_validation_result, execution_result, verification_result, failure_reason,
 checkpoint_state) — enforce (INV-D1: attempts_used <= MAX_SCENARIO_ATTEMPTS (3) at all
 times, combined across verification-failure and tool-validation-failure retries),
-(INV-D2: an Attempt with policy_decision = DENY does not increment attempts_used), and
+(INV-D2: an Attempt whose policy_decision is DENY or REQUIRE_APPROVAL does not
+increment attempts_used — only an ALLOW-decided attempt may increment it), and
 (INV-D3: failure_reason is non-null if and only if the attempt did not pass; null on
 success) as write-time application-layer checks (SQLite CHECK constraints where
 possible, application validation otherwise).
@@ -127,26 +128,50 @@ Execute.
 Implement src/state_manager.py. It must expose checkpoint(scenario_run_id, stage,
 state) which writes the current state to the ScenarioRun/Attempt tables before the
 harness proceeds to the next stage (INV-S3: every state transition is checkpointed to
-SQLite before the harness proceeds to the next stage; Execute is checkpointed both
-immediately before and immediately after). Every call site that transitions
+SQLite before the harness proceeds to the next stage). Every call site that transitions
 scenario/attempt state must call checkpoint() — there is no direct write path to
 these tables outside this module. Every checkpoint write must occur inside a SQLite
 transaction, and the database connection must be opened in WAL (write-ahead log)
-mode. This is a durability requirement distinct from the higher-level idempotency
-design in Task 4.2: WAL mode plus transactional writes ensure a process kill mid-write
-cannot corrupt the SQLite file itself, before the logical "was the action applied"
-question in Task 4.2 even becomes relevant. Write a resume(scenario_run_id) function
-that reads the last checkpoint and returns the exact state needed to continue
-(INV-S4: on resume, the system reads persisted checkpoint state and does not
-re-invoke a recovery action already marked applied).
+mode: this ensures a process kill mid-write cannot corrupt the SQLite file itself.
+
+Execute's checkpointing is NOT two separate checkpoint() calls (pre and post) around
+an independent pipeline write. Instead, expose a second function,
+execute_and_checkpoint(scenario_run_id, attempt_id, apply_fn, state), which:
+(1) writes the pre_execute checkpoint as its own committed transaction (so a kill
+before this point is unambiguously "not started" on resume), then (2) runs apply_fn
+(the actual pipeline mutation) and the post_execute checkpoint write INSIDE A SINGLE
+SQLITE TRANSACTION. A kill before that transaction commits rolls back both the
+pipeline mutation and the post_execute checkpoint together — so "post_execute
+checkpoint exists" becomes a provable guarantee that the action was applied, and
+"post_execute checkpoint absent" provably means it was not, with no in-between state
+possible. This is a stronger resolution than the originally-planned "checkpoint
+before and after, reconcile the ambiguous window via idempotency" (ARCHITECTURE.md
+Challenge C2) — the ambiguous window is eliminated by construction rather than
+detected and reconciled after the fact. Task 2.4's funnel function must call
+execute_and_checkpoint() for the actual pipeline mutation, never write to the
+pipeline directly and call checkpoint() separately. Write a resume(scenario_run_id)
+function that reads the last checkpoint and returns the exact state needed to
+continue, including an action_applied: True/False field derived from whether the
+post_execute checkpoint exists (INV-S4: on resume, the system reads persisted
+checkpoint state and does not re-invoke a recovery action already marked applied).
+
+Write ordering requirement (found during Task 1.2's schema build, where a DB trigger
+enforces this at the data layer): within any single checkpoint write for an Attempt,
+policy_decision must be recorded before attempts_used is increased — never the
+reverse, and never in a separate, later transaction. This ordering is what lets
+INV-D2's enforcement mechanism verify that attempts_used only ever increases for an
+ALLOW-decided Attempt.
 ```
 **Test cases:** Checkpoint call persists state retrievable via `resume()`; a
 `kill -9` during a checkpoint write, followed by reopening the database, leaves the
-file uncorrupted and readable (WAL/transaction durability test — separate from the
-Task 4.2 idempotency tests); simulated kill after checkpoint-before-Execute but before
-checkpoint-after-Execute leaves state resumable without ambiguity about whether the
-action ran (this test will only be fully exercisable once Task 2.4/Execute exists —
-write a stub Execute for this test that Task 2.4 will replace).
+file uncorrupted and readable; a `kill -9` injected between apply_fn running and the
+enclosing transaction's commit, via a stub apply_fn in this task (Task 2.4 will
+replace it with the real one), leaves resume() reporting action_applied=False and the
+pipeline mutation rolled back — not merely "in doubt," but provably not applied; a
+kill injected after the transaction commits leaves resume() reporting
+action_applied=True with the mutation present. No test should find a state where the
+pipeline was mutated but action_applied reports False, or vice versa — that
+combination would mean the atomicity guarantee failed.
 **Verification command:**
 ```bash
 python -m pytest tests/session1/test_state_manager.py -v
@@ -237,7 +262,10 @@ Implement src/tool_validation.py exposing validate(tool_call) -> ValidationResul
 shapes against a per-tool schema. This runs independently of and after the Policy
 Layer decision in the funnel function (Task 2.4) — do not have this module call
 policy_layer directly; ordering is enforced by the funnel function, not by this
-module.
+module. Each allowlisted tool name must map to a harness-owned implementation with
+validated, typed parameters. The agent never supplies callables, and never supplies raw
+SQL that is executed verbatim (PROMPT_INJECTION relies on this: injected text must
+never become executable SQL).
 ```
 **Test cases:** Well-formed tool call → VALID; tool call with missing required
 parameter → REJECTED; tool call to an unregistered tool name → REJECTED.
@@ -288,12 +316,34 @@ attempt_id, action) which is the ONLY legal call path to actually applying an ac
 to the pipeline. It must, in fixed order: (1) call policy_layer.evaluate(action); if
 DENY, checkpoint the Attempt with policy_decision=DENY and execution_result=None,
 write a policy_decision TraceEvent, and return without incrementing attempts_used
-(INV-S2, INV-D2); if REQUIRE_APPROVAL, checkpoint as PENDING and return without
-executing. (2) If ALLOW, call tool_validation.validate(action); if REJECTED, do not
+(INV-S2, INV-D2); if REQUIRE_APPROVAL, checkpoint the Attempt with
+policy_decision=REQUIRE_APPROVAL and execution_result=NULL (not a separate "PENDING"
+value — ARCHITECTURE.md Section 8 constrains policy_decision to exactly ALLOW, DENY,
+or REQUIRE_APPROVAL; a null execution_result is what represents "not yet executed,
+pending approval"), and return without executing or incrementing attempts_used
+(INV-D2: this applies equally to REQUIRE_APPROVAL as it does to DENY — corrected at
+Phase 6, Task 1.2). (2) If ALLOW, call tool_validation.validate(action); if REJECTED, do not
 execute — trigger the bounded re-plan path (implemented fully in Session 4). (3) If
-VALID, call state_manager.checkpoint(..., stage='pre_execute'), apply the action to
-the pipeline, call state_manager.checkpoint(..., stage='post_execute') (INV-S3). (4)
-Call verification.verify(scenario_run_id) and record verification_result (INV-S5). No
+VALID, call state_manager.execute_and_checkpoint(scenario_run_id, attempt_id,
+apply_fn, state) — NOT separate pre_execute/post_execute checkpoint() calls;
+checkpoint() rejects both of those stage values directly, by design, as of Task 1.3.
+execute_and_checkpoint() itself writes the pre_execute checkpoint as its own
+transaction, then runs apply_fn (the actual pipeline mutation defined by this task)
+and the post_execute checkpoint together atomically (INV-S3 — see ARCHITECTURE.md D3
+superseding refinement for why this replaced the original two-checkpoint design).
+apply_fn must not commit on its own connection — it returns its execution_result and
+lets execute_and_checkpoint control the transaction boundary; execute_and_checkpoint
+enforces this with a runtime guard, not just a convention. apply_fn must also never
+return None — it must return a real execution_result describing what changed, since
+a null result paired with action_applied=True would leave the trace with no record
+of what was actually done (INV-D4 depends on this). apply_fn is built only from
+allowlisted harness code with validated parameters (Task 2.2) — never from
+agent-supplied code or SQL. The authorizer mechanism state_manager uses to block
+transaction control during apply_fn may also be used to enforce INV-S8's table scope
+(its INSERT/UPDATE/DELETE callbacks carry the table name) — consider this when
+implementing the runtime guard. Emit each trace event AFTER its corresponding commit,
+so the trace never claims something that did not commit. (4) Call
+verification.verify(scenario_run_id) and record verification_result (INV-S5). No
 other module or function may write to the pipeline directly (INV-S1: Execute may only
 be invoked through the shared funnel function, which enforces Policy evaluation
 followed by Tool Validation, in that order, before any action reaches the pipeline).
@@ -483,24 +533,28 @@ harness.attempt_action(), incrementing the single shared attempts_used counter e
 time (INV-D1: attempts_used <= MAX_SCENARIO_ATTEMPTS (3) at all times, combined across
 verification-failure and tool-validation-failure retries). Every attempt — regardless
 of which failure type triggered the re-plan — draws from the same counter (INV-D1).
-Policy DENY does not enter this loop and does not consume a budget unit (INV-D2,
-already enforced in Task 2.4). If agent_core.diagnose_and_plan() raises AgentAPIError
+Policy DENY or REQUIRE_APPROVAL does not enter this loop and does not consume a
+budget unit (INV-D2, already enforced in Task 2.4). If agent_core.diagnose_and_plan() raises AgentAPIError
 (Task 3.2), this is an infrastructure failure, not a recovery attempt: retry the API
 call directly (bounded, e.g. exponential backoff, max 3 API-level retries) without
 incrementing attempts_used. Only a genuine tool-validation rejection or verification
 failure consumes the shared budget. On reaching MAX_SCENARIO_ATTEMPTS without a PASS,
 set ScenarioRun.status = UNRECOVERED and write a final trace event. If API-level
 retries are exhausted without ever getting a valid plan, mark the ScenarioRun as
-UNRECOVERED with failure_reason = INFRASTRUCTURE_FAILURE, distinct from a normal
-budget-exhaustion UNRECOVERED, so eval reporting doesn't conflate the two causes
-(consistent with INV-D3's failure_reason design).
+UNRECOVERED and emit a state_transition trace event whose payload records
+reason=INFRASTRUCTURE_FAILURE. Do NOT write failure_reason on any Attempt row: no
+Attempt exists at that point (planning never reached the gates), and INV-D3 restricts
+failure_reason to attempts where tool validation was REJECTED or verification FAILED.
+The ablation runner (Task 5.3) records cause=INFRASTRUCTURE_FAILURE in its own result
+row, so eval reporting does not conflate this with a budget-exhaustion UNRECOVERED.
 ```
 **Test cases:** A scenario requiring 2 verification retries then passing → RECOVERED,
 `attempts_used = 3`; a scenario mixing 1 tool-validation rejection + 2 verification
 failures exhausts the budget at 3 total (not 3 + 2 = 5) → UNRECOVERED; a simulated
 AgentAPIError followed by a successful retry does not increment attempts_used; API
-retries exhausted → UNRECOVERED with failure_reason = INFRASTRUCTURE_FAILURE, not
-counted against the same statistic as a genuine recovery failure.
+retries exhausted → UNRECOVERED, with an INFRASTRUCTURE_FAILURE trace event and no
+Attempt row carrying failure_reason, not counted against the same statistic as a
+genuine recovery failure.
 **Verification command:**
 ```bash
 python -m pytest tests/session4/test_retry_budget.py -v
@@ -510,8 +564,16 @@ python -m pytest tests/session4/test_retry_budget.py -v
 
 ### Task 4.2 — Crash-Resume Path
 
-**Description:** Implement and prove the live kill-and-restart demo path, with
-explicit, distinct behavior for each point in the Execute sequence a crash could occur.
+**Description:** Implement and prove the live kill-and-restart demo path.
+
+*(Revised during Task 1.3, before this task was built — found at the point Claude
+Code asked how Task 1.3's checkpointing should actually be implemented. The original
+three-case design below is superseded: Task 1.3's execute_and_checkpoint() runs the
+pipeline mutation and the post_execute checkpoint in a single SQLite transaction,
+which eliminates the ambiguous crash window by construction rather than requiring
+idempotent reconciliation after the fact. This collapses three cases to two and
+removes the need for this task to reason about idempotent reapply at all — see
+ARCHITECTURE.md Challenge C2 for the full history of this resolution.)*
 
 **CC prompt:**
 ```
@@ -519,37 +581,45 @@ Implement scripts/resume_scenario.py: `python resume_scenario.py --scenario-run-
 ID`, which calls state_manager.resume() to read the last checkpoint and continues
 execution from exactly that point (INV-S4: on resume, the system reads persisted
 checkpoint state and does not re-invoke a recovery action already marked applied).
-Resume behavior must distinguish three cases explicitly, not treat them uniformly:
+resume() reports action_applied: True/False, derived from whether the post_execute
+checkpoint exists — per Task 1.3's atomic execute_and_checkpoint() design, this is a
+provable fact, not an inference. Resume behavior distinguishes exactly two cases:
 
-1. Crash before the pre_execute checkpoint exists (execution never started) -> resume
-   proceeds to execute normally, as if starting fresh from the last valid checkpoint.
-2. Crash after the post_execute checkpoint exists (execution completed and was
-   recorded) -> resume does NOT re-execute; it proceeds directly to verification.
-3. Crash after pre_execute but before post_execute (execution may or may not have
-   completed before the process died) -> resume cannot assume either outcome from
-   checkpoint state alone. It must use the action's idempotency mechanism (safe to
-   reapply per ARCHITECTURE.md's idempotent action design) to reconcile: reapply the
-   action (idempotently, so reapplying a completed action is a no-op in effect), then
-   proceed to verification. This is reconciliation via idempotency, not a re-attempt
-   that consumes an additional unit of the shared attempt budget (INV-D1) — this
-   resume-reconciliation step is distinct from a retry and must not increment
-   attempts_used.
+1. action_applied is False (covers both "execution never started" and "execution
+   started but the enclosing transaction never committed" — these are
+   indistinguishable in effect, since an uncommitted transaction leaves no trace) ->
+   resume proceeds to execute normally via execute_and_checkpoint(), as if starting
+   fresh from the last valid checkpoint.
+2. action_applied is True (the post_execute checkpoint exists, meaning the pipeline
+   mutation is provably committed) -> resume does NOT re-execute; it proceeds
+   directly to verification.
 
-Write scripts/simulate_crash_resume.py which separately tests all three kill points
-and asserts the pipeline is never mutated in a way inconsistent with exactly one
-logical application of the action.
+There is no third case requiring idempotent reconciliation — Task 1.3's atomicity
+guarantee means no state can exist where it's unclear whether the action ran.
+
+On every resume, emit a state_transition trace event recording what resume() found
+(last_stage and action_applied). This closes the one evidentiary gap left by trace
+emission not being atomic with the commit (see ARCHITECTURE.md Section 8): if a kill
+landed between a commit and its trace line, the resume event is the record.
+
+Write scripts/simulate_crash_resume.py which tests both cases by injecting a kill at
+multiple points relative to the execute_and_checkpoint() transaction boundary
+(before pre_execute checkpoint, after pre_execute but before the transaction commits,
+and after the transaction commits) and asserts the pipeline is never mutated in a way
+inconsistent with exactly one logical application of the action, and that
+action_applied always correctly reflects reality.
 ```
-**Test cases:** Kill before pre_execute checkpoint → resume executes once, normally;
-kill after post_execute checkpoint → resume does not re-execute, proceeds straight to
-verification; kill between pre_execute and post_execute → resume reconciles via the
-idempotent reapply path, ends in the same state as an uninterrupted run, and
-attempts_used is unchanged by the reconciliation step itself.
+**Test cases:** Kill before pre_execute checkpoint → action_applied=False, resume
+executes once, normally; kill after pre_execute but before the execute_and_checkpoint
+transaction commits (including a kill injected mid-apply_fn, before commit) →
+action_applied=False, pipeline mutation absent, resume executes once, normally — not
+treated as a special ambiguous case; kill after the transaction commits →
+action_applied=True, resume does not re-execute, proceeds straight to verification.
 **Verification command:**
 ```bash
-python scripts/simulate_crash_resume.py --assert-idempotent --assert-all-three-cases
+python scripts/simulate_crash_resume.py --assert-atomic --assert-both-cases
 ```
-**Invariant enforcement:** INV-S3, INV-S4, INV-D1 (reconciliation must not consume
-budget).
+**Invariant enforcement:** INV-S3, INV-S4.
 **Regression classification:** HARNESS-CANDIDATE — directly tied to INV-S3/INV-S4,
 stateless from the harness's perspective, executable against a running system.
 
@@ -787,8 +857,8 @@ naturally-occurring one, a companion note (docs/traces/failure_trace.README.md) 
 this explicitly.
 **Verification command:**
 ```bash
-python -m json.tool docs/traces/success_trace.jsonl > /dev/null && \
-python -m json.tool docs/traces/failure_trace.jsonl > /dev/null
+python -m json.tool --json-lines docs/traces/success_trace.jsonl > /dev/null && \
+python -m json.tool --json-lines docs/traces/failure_trace.jsonl > /dev/null
 ```
 **Invariant enforcement:** INV-D4 (consumed, not newly enforced).
 **Regression classification:** NOT-REGRESSION-RELEVANT — one-time artifact capture.
@@ -843,10 +913,14 @@ test -f README.md
       REGRESSION-RELEVANT, 6 HARNESS-CANDIDATE, 10 NOT-REGRESSION-RELEVANT).
 - [x] Confirm all 13 invariants from INVARIANTS.md are enforced by at least one task
       above (cross-check: INV-S1 [2.4], INV-S2 [2.1, 2.4], INV-S3 [1.3, 2.4, 4.2],
-      INV-S4 [1.3, 4.2], INV-S5 [2.3], INV-S6 [5.1], INV-S7 [4.3], INV-D1 [1.2, 4.1,
-      4.2 — reconciliation must not consume budget], INV-D2 [1.2, 2.4, 4.1], INV-D3
-      [1.2], INV-D4 [1.2, 1.4, 6.4], INV-D5 [1.2], INV-D6 [3.1, 5.2] — all 13
-      confirmed covered.
+      INV-S4 [1.3, 4.2], INV-S5 [2.3], INV-S6 [5.1], INV-S7 [4.3], INV-D1 [1.2, 4.1],
+      INV-D2 [1.2, 2.4, 4.1], INV-D3 [1.2], INV-D4 [1.2, 1.4, 6.4], INV-D5 [1.2],
+      INV-D6 [3.1, 5.2] — all 13 confirmed covered. *(Note: Tasks 1.3 and 4.2 were
+      later revised during Phase 6 build to use an atomic execute_and_checkpoint
+      transaction, which removed the "reconciliation" concept entirely — see
+      ARCHITECTURE.md D3's superseding refinement. INV-D1 coverage on Task 4.2 no
+      longer applies, since there is no longer a reconciliation step to guard against
+      consuming budget; INV-S3/INV-S4 coverage on Tasks 1.3/4.2 is unaffected.)*
 - [x] INV-S8 (Execute Write-Scope Isolation) added via Phase 4 loop-back (Finding 1)
       and enforced in Task 2.4 — total invariant count is now 14, all confirmed
       covered by at least one task.

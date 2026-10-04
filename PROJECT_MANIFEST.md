@@ -1,9 +1,9 @@
 # PROJECT_MANIFEST.md — DataOps Agent
 
-**METHODOLOGY_VERSION:** pbvi_core.md v5.0 (pbvi_plan.md v1.0, pbvi_build.md v1.0,
+METHODOLOGY_VERSION: pbvi_core.md v5.0 (pbvi_plan.md v1.0, pbvi_build.md v1.0,
 pbvi_templates.md v3.12)
-**INVARIANT_AUTHORSHIP_MODE:** ASSISTED
-**APPLICATION_SURFACE:** BACKGROUND_SERVICE
+INVARIANT_AUTHORSHIP_MODE: ASSISTED
+APPLICATION_SURFACE: BACKGROUND_SERVICE
 
 ## Core Documents
 
@@ -13,7 +13,7 @@ pbvi_templates.md v3.12)
 | `docs/INVARIANTS.md` | Signed off — Phase 2 (13 invariants), amended at Phase 4 (INV-S8 added, 14 total) |
 | `docs/EXECUTION_PLAN.md` | Signed off — Phase 3, amended at Phase 4 (Tasks 1.3, 2.4, 3.2, 4.1, 5.2, 5.3) |
 | `docs/PHASE4_GATE_RECORD.md` | PASS — Phase 4 |
-| `Claude.md` | v1.0 · FROZEN · 2026-09-12 |
+| `Claude.md` | v1.3 · FROZEN · 2026-10-02 |
 
 ## Session Prompt Files
 
@@ -32,5 +32,9 @@ None.
 
 ## Non-Standard Registered Directories
 
-None beyond the Standard Repository Structure (`src/`, `tests/`, `docs/`, `scripts/`,
-`data/`, `verification/`, `tools/`).
+Beyond the Standard Repository Structure (`src/`, `tests/`, `docs/`, `scripts/`,
+`data/`, `verification/`, `tools/`):
+
+| Directory | Purpose | Authorised by |
+|---|---|---|
+| `sessions/` | Session execution prompts (`S01`–`S06_execution_prompt.md`), session logs and verification records | `Claude.md` v1.3 |

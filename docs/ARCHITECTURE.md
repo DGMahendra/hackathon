@@ -68,11 +68,20 @@ individually — rejected as fragile under time pressure with a 2-person team.
 specifically both immediately before and immediately after the Execute gate (not just
 "after," as originally proposed).
 **Rationale:** Addresses the ambiguity Challenge C2 raised: a crash mid-execution could
-otherwise leave the system unable to tell whether an action was applied. Checkpointing
-on both sides of Execute, combined with idempotent action design, lets resume logic
-determine unambiguously whether to re-apply or skip.
+otherwise leave the system unable to tell whether an action was applied.
 **Alternatives rejected:** Checkpoint-after-only (original proposal) — rejected once the
 mid-execution ambiguity was surfaced.
+**Superseding refinement (found during Phase 6, Task 1.3, before Task 4.2 was
+built):** The original resolution planned to checkpoint both sides of Execute as
+separate writes and rely on idempotent action design to reconcile the ambiguous
+window between them. Before Task 4.2 was built, a stronger mechanism was adopted
+instead: the pipeline mutation and the post_execute checkpoint now commit as a single
+SQLite transaction (`state_manager.execute_and_checkpoint()`). A kill before that
+transaction commits rolls back both together, so "post_execute checkpoint exists"
+becomes a provable fact about whether the action applied, not an inference requiring
+idempotent reconciliation. This eliminates the ambiguous window by construction
+rather than detecting and recovering from it — see `EXECUTION_PLAN.md` Tasks 1.3 and
+4.2 for the implementation.
 
 ### D4 — Shared scenario-level attempt budget (`MAX_SCENARIO_ATTEMPTS = 3`)
 **Decision:** Verification failures and tool-validation failures draw from the same
@@ -150,9 +159,12 @@ makes a violation visible in code review rather than silent.
 *Strongest argument against:* Checkpointing only after a transition completes means a
 crash mid-Execute leaves the system unable to tell whether the action was actually
 applied to the pipeline.
-*Verdict:* **Valid — addressed.** Resolved by checkpointing both before and after
-Execute specifically, combined with idempotent action design (already required by the
-locked "no repeated side effects on re-invocation" decision).
+*Verdict:* **Valid — addressed, then strengthened.** Originally resolved by
+checkpointing both before and after Execute, combined with idempotent action design.
+Superseded during Phase 6 (Task 1.3) by an atomic transaction spanning the pipeline
+mutation and the post_execute checkpoint together — see D3's superseding refinement
+above. The ambiguity is now eliminated by construction rather than reconciled after
+detection.
 
 **C3 — Challenge D4 (shared budget masks failure-mode diagnostics):**
 *Strongest argument against:* Conflating verification failures and tool-validation
@@ -253,6 +265,15 @@ internals).
 - Represents one end-to-end run of the harness against one injected failure.
 
 **Attempt**
+- `attempt_number` semantics *(clarified during Phase 6 build, Task 1.2)*:
+  `attempt_number` equals the ScenarioRun's `attempts_used` value **at the time this
+  row is written** — not a separately-incrementing sequence. For a row that
+  completes a real (budget-consuming) attempt, this is `attempts_used` *after* the
+  increment (range 1–3). For a DENY or REQUIRE_APPROVAL row (INV-D2: these never
+  increment `attempts_used`), this is whatever `attempts_used` already stood at when
+  the decision was made (range 0–3) — so it may repeat a number already used by a
+  real attempt. `(scenario_run_id, attempt_number)` is deliberately NOT unique for
+  this reason.
 - `id`, `scenario_run_id`, `attempt_number`, `plan`, `policy_decision` (ALLOW | DENY |
   REQUIRE_APPROVAL), `tool_validation_result`, `execution_result`,
   `verification_result`, `failure_reason` (nullable), `checkpoint_state`
@@ -264,6 +285,17 @@ internals).
   state_transition | policy_decision), `payload`, `timestamp`
 - The append-only record that is serialized to the JSONL trace file; one line per
   event.
+- *MVP realization (decided at the Session 1 gate, Phase 6):* the trace is realized as
+  the JSONL file only. `src/trace_logger.py` validates `scenario_run_id` and
+  `attempt_id` against the database (read-only) before appending one line; the
+  `TraceEvent` database table exists in the schema but is intentionally not populated
+  in the MVP. Known limitation: trace emission is not atomic with the SQLite
+  checkpoint commit, so a kill between a commit and its trace line can leave the trace
+  missing the final event, but never claiming an event that did not commit. Mitigation:
+  trace lines are emitted AFTER the corresponding commit, and `resume()` emits a
+  reconciliation `state_transition` event recording what it found (see Task 4.2).
+  Upgrade path (parking lot): write TraceEvent rows inside the checkpoint transaction
+  and export JSONL from them.
 
 **PipelineState (Bronze / Silver / Gold)**
 - The actual synthetic data tables being operated on — separate from harness metadata

@@ -69,6 +69,16 @@ class CheckpointError(Exception):
     """Raised when a checkpoint request is invalid or would break an invariant."""
 
 
+class RunInProgressError(CheckpointError):
+    """Raised when an exclusive run is requested while another ScenarioRun is IN_PROGRESS (INV-S7)."""
+
+    def __init__(self, scenario_run_id: int):
+        super().__init__(f"INV-S7: ScenarioRun {scenario_run_id} is IN_PROGRESS against the shared pipeline; "
+                         f"resume it (scripts/resume_scenario.py --scenario-run-id {scenario_run_id}) "
+                         f"before starting another")
+        self.scenario_run_id = scenario_run_id
+
+
 def init(db_path) -> None:
     """Set the database file used by every subsequent State Manager call."""
     global _db_path
@@ -104,11 +114,22 @@ def _transaction():
         conn.close()
 
 
-def start_run(scenario_type: str) -> int:
-    """Create a ScenarioRun (status IN_PROGRESS) and return its id."""
+def start_run(scenario_type: str, exclusive: bool = False) -> int:
+    """Create a ScenarioRun (status IN_PROGRESS) and return its id. With exclusive=True, refuse
+    (RunInProgressError) if another run is IN_PROGRESS — checked inside the same write
+    transaction as the insert, so two callers can never both succeed (INV-S7)."""
     with _transaction() as conn:
+        if exclusive:
+            _require_no_run_in_progress(conn)
         cur = conn.execute("INSERT INTO ScenarioRun (scenario_type) VALUES (?)", (scenario_type,))
         return cur.lastrowid
+
+
+def _require_no_run_in_progress(conn) -> None:
+    """Raise RunInProgressError if any ScenarioRun is IN_PROGRESS (INV-S7)."""
+    row = conn.execute("SELECT id FROM ScenarioRun WHERE status = 'IN_PROGRESS' ORDER BY id LIMIT 1").fetchone()
+    if row is not None:
+        raise RunInProgressError(row["id"])
 
 
 def start_attempt(scenario_run_id: int) -> int:

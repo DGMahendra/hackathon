@@ -9,7 +9,8 @@ Session 2 funnel, where code — not this prompt — decides what may run.
 
 What the agent sees: every PipelineState table (schema and rows, including bronze record text,
 which is how a PROMPT_INJECTION payload reaches it) and Deterministic Verification's failure
-details. It never sees the Failure Injector's description of what was injected.
+details, and — when re-planning (Task 4.1) — the run's previous attempts and why each failed. It
+never sees the Failure Injector's description of what was injected.
 
 Errors (needed by the Session 4 retry loop, INV-D1):
   AgentAPIError — infrastructure: timeout, connection, rate limit, 5xx, any other API error,
@@ -32,6 +33,7 @@ import verification
 
 MODEL = "claude-sonnet-5"
 MAX_TOKENS = 8000
+REQUEST_TIMEOUT_SECONDS = 300.0  # the SDK's own retries are off: the orchestrator owns the retry policy
 MAX_ROWS_SHOWN = 50
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "harness.db"
@@ -94,7 +96,7 @@ def init(db_path) -> None:
 def diagnose_and_plan(scenario_run_id: int, client=None) -> Plan:
     """Ask Claude to diagnose the run's failure and propose one action; trace the reasoning."""
     scenario_type = _scenario_type(scenario_run_id)
-    prompt = _build_prompt(scenario_type, verification.verify(scenario_run_id))
+    prompt = _build_prompt(scenario_type, verification.verify(scenario_run_id), _previous_attempts(scenario_run_id))
     plan = _parse_plan(_request(client or _client(), prompt))
     trace_logger.emit(scenario_run_id, None, "state_transition", {
         "stage": "plan", "model": plan.model, "diagnosis": plan.diagnosis,
@@ -107,7 +109,7 @@ def _client():
     """Return an Anthropic client authenticated with ANTHROPIC_API_KEY (from the env or .env)."""
     if not env_file.load():
         raise AgentAPIError("ANTHROPIC_API_KEY is not set (environment or repo-root .env)", retryable=False)
-    return anthropic.Anthropic()
+    return anthropic.Anthropic(max_retries=0, timeout=REQUEST_TIMEOUT_SECONDS)
 
 
 def _request(client, prompt: str):
@@ -158,11 +160,24 @@ def _scenario_type(scenario_run_id: int) -> str:
     return row[0]
 
 
-def _build_prompt(scenario_type: str, result) -> str:
-    """Describe the failure symptoms and the full pipeline state for the model."""
+def _build_prompt(scenario_type: str, result, previous: list) -> str:
+    """Describe the failure symptoms, earlier attempts (if any) and the full pipeline state."""
     symptoms = "\n".join(f"- {detail}" for detail in result.details) or "- (verification currently passes)"
-    return (f"Scenario type: {scenario_type}\n\nVerification report: {result.status}\n{symptoms}\n\n"
+    history = ("\n\nPrevious attempts in this run (they did not recover it):\n" + "\n".join(previous)) if previous else ""
+    return (f"Scenario type: {scenario_type}\n\nVerification report: {result.status}\n{symptoms}{history}\n\n"
             f"Current pipeline state:\n\n{_pipeline_snapshot()}")
+
+
+def _previous_attempts(scenario_run_id: int) -> list:
+    """Return one line per earlier attempt of the run: its proposed action and how the harness judged it."""
+    with closing(_connect_read_only()) as conn:
+        rows = conn.execute(
+            "SELECT plan, policy_decision, tool_validation_result, verification_result, failure_reason "
+            "FROM Attempt WHERE scenario_run_id = ? AND plan IS NOT NULL ORDER BY id", (scenario_run_id,)
+        ).fetchall()
+    return [f"- attempt {n}: proposed {json.dumps(json.loads(plan).get('action'))}; policy {decision}; "
+            f"tool validation {validation}; verification {verified}; reason: {reason}"
+            for n, (plan, decision, validation, verified, reason) in enumerate(rows, start=1)]
 
 
 def _pipeline_snapshot() -> str:

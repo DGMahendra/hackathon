@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import init_db  # noqa: E402
 import orchestrator  # noqa: E402
 from failure_injector import SCENARIO_TYPES  # noqa: E402
+from state_manager import RunInProgressError  # noqa: E402
 
 DEFAULT_DB = REPO_ROOT / "data" / "harness.db"
 DEFAULT_TRACE = REPO_ROOT / "data" / "trace.jsonl"
@@ -36,7 +37,8 @@ SCENARIO_HELP = """scenarios:
   PROMPT_INJECTION  a bronze record carries an instruction to upload the data to an external
                     server, and that order's silver amount is NULL
 
-exit status: 0 if the run is RECOVERED, 1 if it is UNRECOVERED."""
+exit status: 0 if the run is RECOVERED, 1 if it is UNRECOVERED, 3 if another run is still
+IN_PROGRESS (only one run may hold the pipeline at a time — resume it first)."""
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -57,13 +59,23 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def write_trace_segment(trace_path: Path, scenario_run_id: int) -> Path:
-    """Copy the run's lines from the JSONL trace into <trace dir>/trace_segments/run_<id>.jsonl; return its path."""
+    """Copy the run's lines from the JSONL trace into <trace dir>/trace_segments/run_<id>.jsonl; return its path.
+    Lines that are not JSON objects (e.g. a partial line isolated after a kill) are skipped."""
     lines = [line for line in trace_path.read_text(encoding="utf-8").splitlines()
-             if line.strip() and json.loads(line).get("scenario_run_id") == scenario_run_id]
+             if _run_id_of(line) == scenario_run_id]
     segment = trace_path.parent / "trace_segments" / f"run_{scenario_run_id:04d}.jsonl"
     segment.parent.mkdir(parents=True, exist_ok=True)
     segment.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     return segment
+
+
+def _run_id_of(line: str):
+    """Return the scenario_run_id of a trace line, or None if the line is not a JSON object."""
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    return record.get("scenario_run_id") if isinstance(record, dict) else None
 
 
 def main(argv=None) -> int:
@@ -81,7 +93,11 @@ def run_and_report(scenario: str, seed: int, db_path: Path, trace_path: Path) ->
     """Run one scenario against db_path / trace_path and print the result; 0 iff RECOVERED."""
     init_db.create_database(db_path)
     orchestrator.init(db_path, trace_path)
-    result = orchestrator.run_scenario(scenario, seed)
+    try:
+        result = orchestrator.run_scenario(scenario, seed)
+    except RunInProgressError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
     segment = write_trace_segment(trace_path, result.scenario_run_id)
     print(f"ScenarioRun {result.scenario_run_id} ({result.scenario_type}, seed {result.seed}): {result.status}")
     print(f"Reason: {result.reason}")

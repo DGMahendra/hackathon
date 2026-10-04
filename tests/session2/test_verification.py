@@ -411,7 +411,8 @@ def test_terminal_run_rejects_new_attempts_and_run_writes(db_path, terminal):
 def test_terminal_run_rejects_execute(db_path):
     run_id = sm.start_run("SCHEMA_DRIFT")
     attempt_id = _attempt_with_verification(run_id, None, applied=False)
-    sm.checkpoint(run_id, "run_complete", {"status": "UNRECOVERED"})
+    sm.checkpoint(run_id, "tool_validation", {"attempt_id": attempt_id, "tool_validation_result": "VALID"})
+    sm.checkpoint(run_id, "run_complete", {"status": "UNRECOVERED"})  # cleared for execution, then finished
     with pytest.raises(sm.CheckpointError, match="INV-D5"):
         sm.execute_and_checkpoint(run_id, attempt_id, _stub_apply)
 

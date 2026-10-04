@@ -96,8 +96,8 @@ recorded below are discrepancies or gaps, not conflicts.
 |---------|-----------|--------|--------|
 | 2.1 | Policy Layer | Completed | 09739c6 |
 | 2.2 | Tool Validation | Completed | ea09e4f |
-| 2.3 | Deterministic Verification | Completed | see S2.3 commit |
-| 2.4 | Execute Funnel Function | | |
+| 2.3 | Deterministic Verification | Completed | 0fef507 |
+| 2.4 | Execute Funnel Function | Completed | see S2.4 commit |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -138,6 +138,9 @@ Leave this table empty if the session was not resumed.
 |------|-------------|--------|--------------------|
 | 2.3 | `verification._expectations` is an in-process registry. After a kill and restart, a resumed process must re-register the scenario expectations before verifying, or every check fails closed (safe, but a resumed run could not recover) | FRAGILITY | Session 3 scenario definitions register on import; Session 4 resume must import them |
 | 2.3 | "verification_result comes only from verify()" is enforced structurally (only `harness.py` may checkpoint the verification stage), not at runtime — `state_manager.checkpoint` still accepts a caller-supplied PASS | FRAGILITY | Accepted for MVP; the INV-S5 RECOVERED guard additionally requires an applied ALLOW attempt |
+| 2.4 | An execution error inside apply_fn (e.g. `rename_column` on a column that does not exist) rolls back atomically and propagates out of `attempt_action`. The attempt is left ALLOW + VALID at pre_execute with budget consumed and no failure_reason; INV-D3 allows failure_reason only for REJECTED or verification FAIL | MISSING | Session 4's retry loop decides how a failed execution is recorded (e.g. run verification after the rollback so the attempt gets a FAIL with reason) |
+| 2.4 | ALLOW at the budget cap (attempts_used == max_attempts) raises the schema CHECK's IntegrityError from the policy checkpoint; nothing executes or is recorded | MISSING | Budget exhaustion → UNRECOVERED is Task 4.1 |
+| 2.4 | `scripts/assert_write_scope_isolation.py` and `scripts/simulate_deny_path.py` are exempt, by name, from structural scans (INV-S1 single caller: both; INV-S3 write path: the isolation check only), because they deliberately reach the primitive / authorizer with forbidden input or spies | FRAGILITY | Keep the exemption lists to those files; a test pins each list |
 
 Nature values: BUG | MISSING | FRAGILITY
 Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)

@@ -17,12 +17,20 @@ This module is the only write path to the ScenarioRun and Attempt tables.
 - INV-D2 write ordering: within one checkpoint, Attempt fields (policy_decision) are
   written before ScenarioRun.attempts_used, in the same transaction; an attempts_used
   increase is accepted only in the checkpoint that first records policy_decision=ALLOW.
+  A recorded policy_decision is write-once.
+- INV-S1 / INV-S2: execute_and_checkpoint() refuses an attempt that is not ALLOW-decided
+  and VALID-validated, so no action can reach the pipeline without both gates on record.
+- INV-S8: while apply_fn runs, the authorizer permits writes only to PipelineState tables
+  (and ALTER TABLE only on them); any write to ScenarioRun, Attempt, TraceEvent or any
+  other object — directly or through a trigger — is denied (Task 2.4 runtime guard).
 """
 
 import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+
+from pipeline_tables import PIPELINE_TABLES
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "harness.db"
@@ -129,19 +137,20 @@ def execute_and_checkpoint(scenario_run_id: int, attempt_id: int, apply_fn, stat
 
     (1) The pre_execute checkpoint commits as its own transaction. (2) apply_fn and the
     post_execute checkpoint run inside a single transaction: apply_fn receives the open
-    connection, cannot control the transaction boundary (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/
-    RELEASE are denied while it runs), and returns a non-None execution_result; state is
-    written with the post_execute checkpoint. Refuses if the action is already applied
-    (INV-S4).
+    connection, may write only PipelineState tables and cannot control the transaction
+    boundary (the apply_fn authorizer, INV-S8 / INV-S3), and returns a non-None
+    execution_result; state is written with the post_execute checkpoint. Refuses if the
+    attempt is not ALLOW + VALID (INV-S1, INV-S2) or the action is already applied (INV-S4).
     """
     post_state = dict(state or {}, attempt_id=attempt_id)
     _validate_checkpoint("post_execute", post_state)
     with _transaction() as conn:
+        _require_cleared_for_execution(conn, scenario_run_id, attempt_id)
         _require_not_applied(conn, scenario_run_id, attempt_id)
         _write_checkpoint(conn, scenario_run_id, "pre_execute", {"attempt_id": attempt_id})
     with _transaction() as conn:
         _require_not_applied(conn, scenario_run_id, attempt_id)
-        with _transaction_control_denied(conn):
+        with _apply_fn_scope(conn):
             result = apply_fn(conn)
         _require_apply_contract(conn, result)
         post_state["execution_result"] = result
@@ -183,21 +192,35 @@ def _validate_checkpoint(stage: str, state: dict) -> None:
 
 
 @contextmanager
-def _transaction_control_denied(conn):
-    """Deny transaction-control statements on conn for the block; always remove the
-    authorizer on exit, before the enclosing transaction commits or rolls back."""
-    conn.set_authorizer(_deny_transaction_control)
+def _apply_fn_scope(conn):
+    """Restrict conn to apply_fn's scope for the block (see _apply_fn_authorizer); always
+    remove the authorizer on exit, before the enclosing transaction commits or rolls back."""
+    conn.set_authorizer(_apply_fn_authorizer)
     try:
         yield
     finally:
         conn.set_authorizer(None)
 
 
-def _deny_transaction_control(action, *_args) -> int:
-    """SQLite authorizer: deny BEGIN/COMMIT/ROLLBACK and SAVEPOINT/RELEASE, allow the rest."""
-    if action in (sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT):
-        return sqlite3.SQLITE_DENY
-    return sqlite3.SQLITE_OK
+# What apply_fn may do. Reads are unrestricted; writes only to PipelineState tables.
+# ALTER TABLE ... ADD/RENAME COLUMN rewrites the schema table internally, so UPDATE of
+# sqlite_master / sqlite_temp_master is allowed (it cannot be issued directly: PRAGMA
+# writable_schema is denied). Everything else — transaction control, DDL, PRAGMA, ATTACH,
+# writes to harness tables (directly or via triggers) — is denied.
+_READ_ACTIONS = (sqlite3.SQLITE_READ, sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE)
+_WRITE_ACTIONS = (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE)
+_SCHEMA_TABLES = ("sqlite_master", "sqlite_temp_master")
+
+
+def _apply_fn_authorizer(action, arg1, arg2, *_context) -> int:
+    """SQLite authorizer for apply_fn: allow reads and PipelineState writes, deny the rest."""
+    if action in _READ_ACTIONS:
+        return sqlite3.SQLITE_OK
+    if action in _WRITE_ACTIONS and (arg1 in PIPELINE_TABLES or action == sqlite3.SQLITE_UPDATE and arg1 in _SCHEMA_TABLES):
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_ALTER_TABLE and arg1 == "main" and arg2 in PIPELINE_TABLES:
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
 
 
 def _require_apply_contract(conn, result) -> None:
@@ -213,6 +236,7 @@ def _write_checkpoint(conn, scenario_run_id: int, stage: str, state: dict) -> No
     """Write Attempt fields first, then ScenarioRun fields (INV-D2 ordering)."""
     attempt_id = state.get("attempt_id")
     _require_in_progress(_read_run(conn, scenario_run_id))
+    _require_policy_write_once(conn, scenario_run_id, state)
     _require_increment_with_allow(conn, scenario_run_id, state)
     _require_verification_write_once(conn, scenario_run_id, state)
     _require_verified_for_recovery(conn, scenario_run_id, state)
@@ -234,6 +258,24 @@ def _require_increment_with_allow(conn, scenario_run_id: int, state: dict) -> No
     attempt = _read_attempt(conn, scenario_run_id, state["attempt_id"])
     if attempt["policy_decision"] is not None:
         raise CheckpointError(f"INV-D2: attempt {attempt['id']} already has a recorded policy_decision")
+
+
+def _require_policy_write_once(conn, scenario_run_id: int, state: dict) -> None:
+    """Raise if the checkpoint would overwrite an attempt's recorded policy_decision (INV-D2)."""
+    if "policy_decision" not in state or state.get("attempt_id") is None:
+        return
+    attempt = _read_attempt(conn, scenario_run_id, state["attempt_id"])
+    if attempt["policy_decision"] is not None:
+        raise CheckpointError(f"INV-D2: attempt {attempt['id']} already has a recorded policy_decision")
+
+
+def _require_cleared_for_execution(conn, scenario_run_id: int, attempt_id: int) -> None:
+    """Raise unless the attempt has policy_decision ALLOW and tool_validation_result VALID
+    on record (INV-S1: both gates before Execute; INV-S2: DENY never executes)."""
+    attempt = _read_attempt(conn, scenario_run_id, attempt_id)
+    gates = (attempt["policy_decision"], attempt["tool_validation_result"])
+    if gates != ("ALLOW", "VALID"):
+        raise CheckpointError(f"INV-S1: attempt {attempt_id} is not cleared for execution (policy, validation) = {gates}")
 
 
 def _require_in_progress(run) -> None:

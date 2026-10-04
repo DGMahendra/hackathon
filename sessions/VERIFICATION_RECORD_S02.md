@@ -469,3 +469,202 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 2.4 — Execute Funnel Function
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | DENY action | Never reaches the pipeline-write primitive (asserted with a spy) | N/A | PASS |
+| TC-2 | ALLOW + valid tool call | Executes and checkpoints twice (pre_execute, post_execute) | N/A | PASS |
+| TC-3 | Structural grep/AST test | Exactly one call site to the pipeline-write primitive in the codebase | N/A | PASS |
+| TC-4 | Direct call to the pipeline-write primitive targeting `ScenarioRun`, `Attempt` or `TraceEvent` | Rejected at runtime, independent of the static check | N/A | PASS |
+
+Verification command: `python -m pytest tests/session2/test_harness_funnel.py -v && python scripts/assert_single_execute_caller.py && python scripts/assert_write_scope_isolation.py`
+- State Manager changes first, whole suite: 9 failures, both causes expected. Session 1's
+  kill-test child processes load `state_manager` by path without `src/` on `sys.path` (it now
+  imports `pipeline_tables`), so the child preamble was fixed. `test_terminal_run_rejects_execute`
+  hit the new INV-S1 cleared-for-execution check first, so its attempt is now fully cleared
+  before the run ends. → 650 passed.
+- Funnel tests, run 1: 2 failures. The spy order did not include the primitive's own
+  re-validation (by design), so the expectation was corrected. `assert_single_execute_caller.py`
+  flagged `scripts/assert_write_scope_isolation.py`, which calls the primitive on purpose to
+  test it; it is now a named, printed exemption (`CHECK_SCRIPTS`), like `tests/`. It also flagged
+  `scripts/simulate_deny_path.py` for importing `pipeline_write` to spy on it; that script now
+  reaches it via `harness.pipeline_write`, so it needs no exemption.
+- Whole suite, run 2: 1 failure. Session 1's INV-S3 write-path scan flagged the same check
+  script: its harness-table SQL strings are inputs it expects to be *denied*. Same named
+  exemption, plus a test that the exemption list is exactly that file.
+- Mutation checks (each restored afterwards):
+  - DENY treated as ALLOW: 7 funnel tests fail and `simulate_deny_path` exits 1.
+  - Authorizer allows everything: 20 tests fail and `assert_write_scope_isolation` exits 1.
+  - Primitive table check removed: 28 tests fail and the isolation check exits 1.
+  - Cleared-for-execution check removed: 5 tests fail.
+- Final: funnel tests **95 passed**; `assert_single_execute_caller.py` and
+  `assert_write_scope_isolation.py` exit 0 → **verification exit 0**. Whole suite (`tests/`):
+  746 passed. `simulate_deny_path.py --assert-no-execution` exits 0.
+- After the Challenge Finding 1–4 fixes: funnel tests **120 passed** (exit 0); both scripts
+  exit 0 (the isolation check now denies 13 statements); whole suite 771 passed.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S02 "Task 2.4"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S02 Task 2.4...
+## CC Challenge — Task 2.4 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S02
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | A second caller reaches the primitive through an attribute chain, e.g. `import harness; harness.pipeline_write.write(conn, ...)`, or through a dynamic import (`importlib.import_module("pipeline_write")`, `getattr`). `calls_named` only matches calls whose owner is an `ast.Name` in `modules`, and rule 1 only fires on a direct `import pipeline_write`. `scripts/simulate_deny_path.py` already reaches the primitive this way to spy on it, without importing it. `test_single_call_site_detector_catches_a_second_caller` has no case for this. | `assert_single_execute_caller.py` would report "INV-S1 OK" while a second write path exists. | INV-S1 |
+| 2 | A caller of the primitive or of `execute_and_checkpoint` placed under `tools/` or `verification/`. `assert_single_execute_caller.py` scans only `("src", "scripts")`. Both directories are allowed by Claude.md §3, and the Session 1 write-path scan in `tests/session1/test_state_manager.py` already covers them. | A whole permitted code area is invisible to the single-caller check. | INV-S1 |
+| 3 | An aliased import of `execute_and_checkpoint`, e.g. `from state_manager import execute_and_checkpoint as run; run(...)`. The `execute_and_checkpoint` scan passes no `functions` aliases, so a bare alias only matches if its name is literally `execute_and_checkpoint`. The detector test only covers the unaliased bare and attribute forms. | A second caller of the Execute mechanism goes undetected. | INV-S1 |
+| 4 | apply_fn runs a direct `UPDATE sqlite_master ...` (or `UPDATE sqlite_temp_master`). `_apply_fn_authorizer` explicitly allows `SQLITE_UPDATE` on both tables. The denial relies entirely on SQLite's built-in protection while `writable_schema` is off, and that is never exercised. `FORBIDDEN_APPLY_SQL` and `test_apply_fn_writes_outside_pipeline_denied` test `PRAGMA writable_schema = ON` but not the direct UPDATE. | This is the one write the authorizer allows outside PipelineState. If it succeeded, it could rewrite harness table definitions or triggers. | INV-S8 |
+| 5 | `verification.verify()` raises, or the verification checkpoint fails, after `post_execute` has committed. | The attempt would be left applied with `verification_result` NULL after a `tool_call` trace event was already emitted. No test pins what happens to the outcome or the attempt. | INV-S3, INV-S5 |
+| 6 | `policy_layer.request_approval()` raises after the REQUIRE_APPROVAL checkpoint has committed. | The decision is committed but no `policy_decision` trace event is written, so the trace is missing a committed transition. | INV-D4 (trace completeness) |
+| 7 | `attempt_action` is called with an `attempt_id` that belongs to a different `scenario_run_id`. | No funnel test confirms the policy, validation or execute checkpoints reject a cross-run attempt before anything is written. | INV-S1, INV-D4 |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | The `action` object does not change between `policy_layer.evaluate`, `tool_validation.validate` and `_execute`. It is never copied, and `apply_fn` captures `params` by reference. The primitive re-runs validation and the scope check, but not Policy. | `harness.attempt_action` / `_execute` | YES |
+| 2 | `column_type`, which is inlined unquoted into `ALTER TABLE ... ADD COLUMN`, is restricted by Tool Validation to plain type names. Only one injection form (`"TEXT; DROP TABLE Attempt"`) is tested. Clause-style values such as `TEXT REFERENCES ScenarioRun` or `TEXT DEFAULT (...)` are not. | `pipeline_write._add_column` | YES |
+| 3 | `ALTER TABLE <pipeline_table> RENAME TO <other>` is denied. The authorizer's `SQLITE_ALTER_TABLE` branch would allow it on `arg2 in PIPELINE_TABLES`, so the denial must come from some other authorizer action. The test asserts that it is denied but nothing pins why, so an authorizer change could quietly allow a table to be renamed out of PipelineState. | `_apply_fn_authorizer`; `test_apply_fn_writes_outside_pipeline_denied` | YES |
+| 4 | INV-S8 static check (a) only covers `src/pipeline_write.py`. The `apply_fn` closure in `src/harness.py` gets a full connection and is not statically checked for a write path to harness tables. Only the runtime authorizer guards it. | `assert_write_scope_isolation.static_violations` | YES |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S1 | YES | PARTIAL: the structural detector is not tested against attribute-chain or dynamic access, `tools/`/`verification/` callers, or an aliased `execute_and_checkpoint` |
+| INV-S8 | YES | PARTIAL: the allowed `sqlite_master` UPDATE exemption is never tested against a direct UPDATE from apply_fn |
+| INV-S3 | YES | PARTIAL: no test for a failure between `post_execute` commit and the verification checkpoint |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| An execution error in apply_fn leaves the attempt ALLOW + VALID at `pre_execute`, with budget consumed and no `failure_reason` | Already logged; the retry/failure recording is Session 4 |
+| ALLOW at the budget cap raises IntegrityError from the policy checkpoint | Already logged; budget exhaustion → UNRECOVERED is Task 4.1 |
+| Expectations must be re-registered after a kill and restart | Session 3/4 scenario registration and resume |
+| Bounded re-plan after REJECTED | Session 4 |
+| Kill-and-restart between the `pre_execute` commit and the apply/`post_execute` transaction | Session 4 resume path / live demo |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: `scripts/assert_single_execute_caller.py` misses calls to the primitive through an attribute chain (`harness.pipeline_write.write`) or a dynamic import. `scripts/simulate_deny_path.py` shows the path is reachable without importing `pipeline_write`. Add a detector test case for this and extend the detection.
+  Finding 2: `scripts/assert_single_execute_caller.py` scans only `src/` and `scripts/`. It skips `tools/` and `verification/`, which are permitted directories and are already covered by the Session 1 write-path scan.
+  Finding 3: An aliased bare import of `state_manager.execute_and_checkpoint` is not detected. There is no test case for it.
+  Finding 4: The authorizer explicitly allows `SQLITE_UPDATE` on `sqlite_master`/`sqlite_temp_master`, but no test or check-script case attempts a direct `UPDATE sqlite_master` inside apply_fn. Add it to `test_apply_fn_writes_outside_pipeline_denied` and `FORBIDDEN_APPLY_SQL`, and assert that it is rejected and the schema is unchanged.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (INV-S1) | `assert_single_execute_caller.py` is now reference-based: any name, attribute (`harness.pipeline_write.write`), import (any alias) or dynamic lookup (`import_module` / `__import__` / `getattr` / `setattr` with the module's name) of `pipeline_write` outside `src/harness.py` is a violation. `scripts/simulate_deny_path.py`, which spies on the primitive, is now a named, printed check-script exemption. Tests: `test_reference_detector_catches_every_access_form` (8 primitive forms), `test_reference_detector_ignores_unrelated_code` (3), `test_single_caller_check_fails_on_a_planted_second_caller` (attribute-chain caller planted in tools/, verification/, scripts/ → exit 1) | PASS |
+| 2 | TEST (INV-S1) | The scan covers `src/`, `scripts/`, `tools/`, `verification/`. Tests: `test_single_caller_check_scans_every_permitted_code_directory`, plus the planted-caller test above | PASS |
+| 3 | TEST (INV-S1) | `execute_and_checkpoint` is guarded by references too, allowed only in `src/harness.py` and `src/state_manager.py`, so aliased imports (`from state_manager import execute_and_checkpoint as run`), attribute aliasing and `getattr` are caught. 4 cases in `test_reference_detector_catches_every_access_form`; `test_call_site_counter_counts_owner_qualified_calls` | PASS |
+| 4 | TEST (INV-S8) | Direct writes to the schema tables from apply_fn are rejected and leave every `sqlite_master` row unchanged. UPDATE fails on SQLite's own protection ("may not be modified", since `writable_schema` cannot be enabled: PRAGMA is denied); INSERT and DELETE fail on the authorizer. Tests: `test_direct_schema_table_writes_from_apply_fn_rejected` (5), `test_rename_table_out_of_pipeline_scope_denied_by_authorizer` (pins Unverified Assumption 3). `FORBIDDEN_APPLY_SQL` in `scripts/assert_write_scope_isolation.py` gained the two UPDATE cases (13 statements now) | PASS |
+
+### Code Review
+Invariant text is embedded in the Task 2.4 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review (results left blank):
+- INV-S1: `harness.attempt_action` is the only call path to the pipeline-write primitive
+  (`pipeline_write.write`) and to `state_manager.execute_and_checkpoint`; fixed order Policy →
+  Tool Validation → Execute → Verify; execution additionally refused by the State Manager
+  unless the attempt is ALLOW + VALID.
+- INV-S2: DENY (and REQUIRE_APPROVAL) → zero execution; nothing after the policy checkpoint runs.
+- INV-S3: every stage is checkpointed before the next; Execute only via `execute_and_checkpoint`.
+- INV-D2: only the ALLOW branch increments attempts_used, in the same checkpoint as the decision.
+- INV-S8: (a) static — the primitive's module names no harness table, is imported only by
+  `harness.py`; (b) runtime — the primitive rejects any non-PipelineState target, and the
+  apply_fn authorizer denies any write outside PipelineState tables (including via triggers).
+- Trace events emitted only after their commit.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 2.4
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S02.md, sessions/VERIFICATION_RECORD_S02.md,
+                    src/harness.py (new), src/pipeline_write.py (new), src/state_manager.py,
+                    scripts/assert_single_execute_caller.py (new),
+                    scripts/assert_write_scope_isolation.py (new), scripts/simulate_deny_path.py (new),
+                    tests/session2/test_harness_funnel.py (new), tests/session2/test_verification.py,
+                    tests/session1/test_state_manager.py
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/harness.py — init, attempt_action, _record_blocked, _record_allow,
+                    _record_validation, _execute, _record_verification, _describe (+ AttemptOutcome);
+                    src/pipeline_write.py — write, _add_column, _rename_column, _backfill_column
+                    (+ WriteScopeError, InvalidToolCall, IMPLEMENTATIONS);
+                    src/state_manager.py — _apply_fn_scope, _apply_fn_authorizer,
+                    _require_policy_write_once, _require_cleared_for_execution;
+                    scripts — one module each (see the files' docstrings)
+Functions modified: src/state_manager.py — execute_and_checkpoint (cleared-for-execution check;
+                    apply_fn authorizer), _write_checkpoint (policy write-once)
+Functions deleted:  src/state_manager.py — _transaction_control_denied, _deny_transaction_control
+                    (superseded by _apply_fn_scope / _apply_fn_authorizer, which still deny all
+                    transaction control)
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- The pipeline-write primitive is `src/pipeline_write.py::write(conn, tool, params)`, called only
+  from `harness._execute`'s apply_fn. It rejects non-PipelineState targets (INV-S8 runtime
+  guard #1) and re-runs Tool Validation, refusing anything not VALID, so an unvalidated call can
+  never execute even if a future path skips the funnel. Identifiers are quoted; values bound.
+- INV-S8 runtime guard #2 (as the prompt suggests): the State Manager's apply_fn authorizer
+  now allows only reads and writes to PipelineState tables. Its ALTER TABLE internals
+  (`sqlite_master` / `sqlite_temp_master` updates) are allowed because direct schema writes need
+  PRAGMA, which is denied. Everything else is denied, including writes to harness tables through
+  triggers.
+- INV-S1/S2 runtime enforcement at the execute mechanism: `execute_and_checkpoint` refuses an
+  attempt that is not ALLOW + VALID. policy_decision is write-once, so an attempt passes through
+  the funnel once.
+- REQUIRE_APPROVAL: the decision is checkpointed, the approval stub is called (PENDING, recorded
+  in the trace payload), and the funnel returns without validation or execution.
+- REJECTED: the outcome carries `needs_replan=True`; the bounded re-plan loop is Session 4. The
+  ALLOW decision already consumed one unit of budget (INV-D2, ARCHITECTURE D4).
+- Trace events: policy → `policy_decision`; validation and verification → `state_transition`
+  with a `stage`; execution → `tool_call`. Each is emitted after its checkpoint commits. An action
+  that is not strict JSON is traced as its repr.
+- `harness.init(db_path, trace_path)` points the State Manager, Trace Logger and Verification at
+  one database and trace file. The funnel never sets the run status.
+- Execution errors (e.g. renaming a column that does not exist) roll back atomically and
+  propagate; the attempt stays at pre_execute and is not applied. Handling them in the retry
+  loop is Session 4 (see Out of Scope Observations).
+- `scripts/assert_single_execute_caller.py` is reference-based (Challenge Findings 1–3) and
+  scans `src/`, `scripts/`, `tools/`, `verification/`; named check-script exemptions:
+  `scripts/assert_write_scope_isolation.py` and `scripts/simulate_deny_path.py`.
+- `scripts/simulate_deny_path.py` (required by the Session 2 Integration Check; no task prompt
+  creates it) sends 5 PROMPT_INJECTION-style actions through the funnel with spies on every
+  post-policy entry point.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

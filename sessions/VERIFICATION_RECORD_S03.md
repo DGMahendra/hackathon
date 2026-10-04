@@ -621,8 +621,13 @@ CC implementation choices (not separately specified):
   error is re-raised after the orchestrator completes the run, so the process fails loudly.
 - `--db` / `--trace` default to `data/harness.db` / `data/trace.jsonl`; both exist so tests
   and dry runs can use throwaway paths.
-- `--dry-run` (used by the Session 3 Integration Check) is **not** part of Task 3.4's prompt and
-  is not implemented here — see `SESSION_LOG_S03.md`.
+- `--dry-run` (used by the Session 3 Integration Check) is not part of Task 3.4's prompt. It was
+  added after the SESSION BLOCKED, per the engineer's decision (option a): a full run against a
+  temporary database and trace that are discarded afterwards, so `data/` is untouched and
+  `--db` / `--trace` are ignored. It shares `run_and_report` with the normal path. Tests:
+  `test_dry_run_is_a_full_run_that_leaves_data_untouched` (RECOVERED → 0, UNRECOVERED → 1; the
+  tmp paths and `data/` are unchanged; the segment is discarded) and
+  `test_dry_run_documented_in_help`. `test_cli.py`: **19 passed**.
 
 ### BCE Impact
 No BCE artifact impact.

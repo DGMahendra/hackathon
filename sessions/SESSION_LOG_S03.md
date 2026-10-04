@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** BLOCKED at the Session 3 Integration Check — `--dry-run` undefined (decision not covered)
+**Status:** In Progress (resumed at the Integration Check: implementing `--dry-run` per engineer decision)
 
 ## Pre-Build Validation
 
@@ -101,6 +101,7 @@ BLOCKED is set by CC on verification failure in Autonomous mode.
 |------------|-------------------|--------------------------|-------------|------------|
 | 2026-10-04 | 3.2 (SESSION BLOCKED: ANTHROPIC_API_KEY not set) | Engineer created repo-root `.env` defining ANTHROPIC_API_KEY (first version named it `API_KEY`; corrected by the engineer); `.env` gitignored (4e5989a); `anthropic` SDK 1.11.0 installed | | |
 | 2026-10-04 | 3.2 (SESSION BLOCKED: credit balance too low) | Engineer added credit to the Anthropic account; Task 3.2 verification re-run → 26 passed | | |
+| 2026-10-04 | Integration Check (SESSION BLOCKED: `--dry-run` undefined) | Engineer chose option (a): full run against a throwaway database and trace | | |
 
 Leave this table empty if the session was not resumed.
 
@@ -113,6 +114,7 @@ Leave this table empty if the session was not resumed.
 | Session 3 | Challenge Agent findings dispositioned by CC (TEST for INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT others with rationale); no second challenge run per task | Engineer standing instruction, 2026-10-04 |
 | Session 3 | Agent model `claude-sonnet-5`, exactly as Claude.md §4 fixes it | Claude.md §4; ID verified valid via the Claude API reference |
 | 3.3 | `scripts/run_scenario.py` created in Task 3.3 (thin CLI), completed in Task 3.4 | Task 3.3's verification command runs it, though Task 3.4's prompt defines it — a sequencing gap in `docs/EXECUTION_PLAN.md`, resolved without changing either prompt |
+| Integration | `--dry-run` = full scenario run (inject, live plan, gates, execute, verify, terminal status) against a temporary database and trace; nothing in `data/` changes | Engineer decision (2026-10-04), option (a), resolving the SESSION BLOCKED at the Integration Check |
 | 3.2 | Commit 4e5989a (`.gitignore` excludes `.env`) was made by a CC command the engineer rejected in the UI — the command had already run. Kept because it only protects the engineer's key from being committed | Disclosed to the engineer on resume; revert on request |
 
 ---

@@ -94,7 +94,7 @@ def test_prints_status_and_trace_segment_path(tmp_path, fake_agent, capsys):
     _main(tmp_path, "--scenario", "SCHEMA_DRIFT", "--seed", "7")
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("ScenarioRun 1 (SCHEMA_DRIFT, seed 7): RECOVERED")
-    segment = Path(out[2].removeprefix("Trace segment: "))
+    segment = Path(out[2].removeprefix("Trace segment: ").rsplit(" (", 1)[0])
     assert segment == tmp_path / "trace_segments" / "run_0001.jsonl"
     events = [json.loads(line) for line in segment.read_text(encoding="utf-8").splitlines()]
     assert events and all(e["scenario_run_id"] == 1 for e in events)
@@ -145,3 +145,33 @@ def test_cli_is_a_thin_wrapper():
     source = CLI_PATH.read_text(encoding="utf-8")
     for forbidden in ("pipeline_write", "execute_and_checkpoint", "attempt_action", "anthropic", "flask", "fastapi", "http.server"):
         assert forbidden not in source
+
+
+# --- --dry-run (engineer decision, Session 3 Integration Check) -----------------------
+
+def _tree_state(path: Path):
+    return {p.relative_to(path).as_posix(): p.stat().st_mtime_ns for p in path.rglob("*") if p.is_file()} if path.exists() else {}
+
+
+@pytest.mark.parametrize("plan,expected", [(FIXES["SCHEMA_DRIFT"], 0), (UPLOAD, 1)])
+def test_dry_run_is_a_full_run_that_leaves_data_untouched(tmp_path, fake_agent, capsys, plan, expected):
+    fake_agent["plan"] = plan
+    db, trace = tmp_path / "harness.db", tmp_path / "trace.jsonl"
+    before = _tree_state(tmp_path)
+    cli = _load_cli()
+    data_before = _tree_state(REPO_ROOT / "data")
+    status = cli.main(["--scenario", "SCHEMA_DRIFT", "--dry-run", "--db", str(db), "--trace", str(trace)])
+    out = capsys.readouterr().out
+    assert status == expected
+    assert ("RECOVERED" if expected == 0 else "UNRECOVERED") in out.splitlines()[0]
+    assert "Dry run: the temporary database and trace have been discarded" in out
+    assert _tree_state(tmp_path) == before  # --db / --trace ignored: nothing created
+    assert _tree_state(REPO_ROOT / "data") == data_before  # data/ untouched
+    segment = Path(out.splitlines()[2].removeprefix("Trace segment: ").rsplit(" (", 1)[0])
+    assert not segment.exists()  # discarded with the temporary directory
+    assert "dataops-dry-run-" in str(segment)
+
+
+def test_dry_run_documented_in_help():
+    result = subprocess.run([sys.executable, str(CLI_PATH), "--help"], capture_output=True, text=True, timeout=60)
+    assert "--dry-run" in result.stdout and "temporary database" in result.stdout

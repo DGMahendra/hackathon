@@ -7,6 +7,8 @@ Injects the scenario's failure into the pipeline, asks the agent (claude-sonnet-
 recovery plan, routes the proposed action through the harness funnel, and prints the
 ScenarioRun's final status and the path to its trace segment (the run's lines from the JSONL
 trace, also written to their own file). Exits 0 on RECOVERED, 1 on UNRECOVERED.
+--dry-run performs the same full run against a temporary database and trace, then discards
+them: nothing under data/ changes (engineer decision, Session 3 Integration Check).
 This CLI is the whole demo surface: no web UI, no server. Needs ANTHROPIC_API_KEY
 (environment or the gitignored repo-root .env).
 """
@@ -14,6 +16,7 @@ This CLI is the whole demo surface: no web UI, no server. Needs ANTHROPIC_API_KE
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +50,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"seed for the pipeline data (default {DEFAULT_SEED})")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite database (created if missing)")
     parser.add_argument("--trace", type=Path, default=DEFAULT_TRACE, help="JSONL trace file (appended)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="full run against a temporary database and trace, discarded afterwards "
+                             "(data/ is not touched; --db and --trace are ignored)")
     return parser.parse_args(argv)
 
 
@@ -63,13 +69,23 @@ def write_trace_segment(trace_path: Path, scenario_run_id: int) -> Path:
 def main(argv=None) -> int:
     """CLI entry point: run the scenario, print its status and trace segment; 0 iff RECOVERED."""
     args = parse_args(argv)
-    init_db.create_database(args.db)
-    orchestrator.init(args.db, args.trace)
-    result = orchestrator.run_scenario(args.scenario, args.seed)
-    segment = write_trace_segment(args.trace, result.scenario_run_id)
+    if not args.dry_run:
+        return run_and_report(args.scenario, args.seed, args.db, args.trace)
+    with tempfile.TemporaryDirectory(prefix="dataops-dry-run-") as workdir:
+        status = run_and_report(args.scenario, args.seed, Path(workdir) / "harness.db", Path(workdir) / "trace.jsonl")
+    print("Dry run: the temporary database and trace have been discarded; data/ was not touched.")
+    return status
+
+
+def run_and_report(scenario: str, seed: int, db_path: Path, trace_path: Path) -> int:
+    """Run one scenario against db_path / trace_path and print the result; 0 iff RECOVERED."""
+    init_db.create_database(db_path)
+    orchestrator.init(db_path, trace_path)
+    result = orchestrator.run_scenario(scenario, seed)
+    segment = write_trace_segment(trace_path, result.scenario_run_id)
     print(f"ScenarioRun {result.scenario_run_id} ({result.scenario_type}, seed {result.seed}): {result.status}")
     print(f"Reason: {result.reason}")
-    print(f"Trace segment: {segment}")
+    print(f"Trace segment: {segment} ({len(segment.read_text(encoding='utf-8').splitlines())} lines)")
     return 0 if result.status == orchestrator.RECOVERED else 1
 
 

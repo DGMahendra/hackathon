@@ -501,3 +501,141 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 3.4 — CLI Entry Point
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | CLI runs each scenario type | Exit 0 on RECOVERED, non-zero on UNRECOVERED | N/A | PASS |
+| TC-2 | `--help` | Documents all three scenario types | N/A | PASS |
+
+Verification command: `python scripts/run_scenario.py --help`
+- Run 1: **exit 0**. The help lists all three scenarios as `--scenario` choices, each with a
+  description, plus the exit-status contract.
+- `tests/session3/test_cli.py`: **16 passed**, run in-process with the agent's client pointed at
+  a local fake API. It covers:
+  - each scenario exits 0 when RECOVERED and non-zero when UNRECOVERED (a denied upload);
+  - status and trace-segment output;
+  - each segment holds exactly its own run's lines;
+  - `--seed` is passed through, and a missing database is created;
+  - `--help` content;
+  - invalid arguments → exit 2;
+  - the CLI is a thin wrapper (no funnel internals, no API client, no server).
+- Live CLI runs (exit 0 on RECOVERED) were already exercised by Task 3.3's verification
+  command (runs 1–9).
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S03 "Task 3.4"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S03 Task 3.4...
+## CC Challenge — Task 3.4 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S03
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | The trace file contains a malformed or partly written JSONL line, for example left behind by an earlier killed run. `write_trace_segment` (`scripts/run_scenario.py:56`) calls `json.loads` on every line and does not handle `JSONDecodeError`. | The run's status is already written as terminal before the segment is built. A bad line elsewhere in the shared trace makes the CLI crash with a traceback and a non-zero exit even when the run was RECOVERED. The task requires exit 0 on RECOVERED. | NONE |
+| 2 | The run-ID namespace is reset but the trace is kept. Example: `data/harness.db` is deleted and `data/trace.jsonl` is still there (the defaults), or a new `--db` is used with an existing `--trace`. | The segment filters only on `scenario_run_id`. A new run 1 would pull in the lines of an old run 1 from the earlier DB, and `run_0001.jsonl` would be silently overwritten. The printed "trace segment" would then hold another run's events. `test_trace_segment_holds_only_its_own_run` always uses a fresh DB and a fresh trace together. | NONE (bears on INV-D4's purpose of attributable trace lines, but the CLI does not enforce INV-D4) |
+| 3 | The harness raises an error that the orchestrator re-raises: the `HARNESS_ERROR` path at `src/orchestrator.py:58-60`. | Scope Decisions say this exits loudly, but no CLI test checks it. On this path no status line is printed and no segment is written. The exit code and output are not verified. | NONE |
+| 4 | `ANTHROPIC_API_KEY` is missing. `agent_core._client` raises `AgentAPIError` (`src/agent_core.py:109`), but the test fixture always monkeypatches `_client`. | The CLI's exit code and output in the most likely demo-time misconfiguration are not checked. It is unclear whether this ends as UNRECOVERED with exit 1 or as a traceback. | NONE |
+| 5 | UNRECOVERED for any reason other than `POLICY_DENY`, such as verification failure after the attempt budget runs out, a tool-validation rejection, or `PlanningError`. | TC-1 says "non-zero on UNRECOVERED". The tests only check one UNRECOVERED reason, `POLICY_DENY`. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | `main()`'s return value reaches the process exit code through `sys.exit(main())`. | TC-1 tests call `main()` in-process and only check the return value. The only subprocess tests (`--help` and bad arguments) exit inside argparse and never reach `main()`'s return. No test checks a real process exiting 1 on UNRECOVERED. | YES, as a structural check of the `__main__` block, or a subprocess run with a stubbed agent. |
+| 2 | `test_help_documents_every_scenario` shows that the epilog describes each scenario. | Its check, `stdout.count(scenario) >= 2`, passes without the epilog. Argparse already prints each choice in the usage line, again in the `--scenario {…}` options line, and again in the joined help string. That is at least 3 occurrences. The test would not notice if the descriptions were deleted. | YES |
+| 3 | Every trace line is a JSON object, so `.get` works on it. | `json.loads(line).get(...)` raises `AttributeError` for any valid JSON line that is not an object. | YES |
+| 4 | Writing to `<trace dir>/trace_segments/` stays inside the allowed scope (Claude.md §3). | This holds for the default `data/` path. A user-supplied `--trace` can put segments anywhere, and nothing checks or documents this. | YES (document or test it) |
+
+### Invariant Coverage Gaps
+NONE. Task 3.4 declares no invariant enforcement, and none of the diff touches an enforcement point.
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| A live `claude-sonnet-5` run through the CLI that includes the new trace-segment code. The Task 3.3 live runs (1–9) came before `write_trace_segment`. | Needs the live API and an engineer-run demo. |
+| Running the CLI while another ScenarioRun is IN_PROGRESS (INV-S7). | The guard belongs to the orchestrator and lifecycle (Task 3.3 and later sessions), not the CLI. |
+| Killing the process during a run, then resuming (INV-S3/S4). | Belongs to `scripts/resume_scenario.py` and the State Manager in a later session. |
+| The `--dry-run` flag that the Session 3 Integration Check expects. | Not in the Task 3.4 prompt; it is already noted in `sessions/SESSION_LOG_S03.md`. |
+
+### Challenge Verdict
+
+FINDINGS — 4 items need engineer disposition before commit.
+  Finding 1: `write_trace_segment` runs after the run is terminal and has no handling for malformed or non-object trace lines. One bad line in the shared JSONL turns a RECOVERED run into a traceback with a non-zero exit, which breaks TC-1's exit-0 contract. No test covers this.
+  Finding 2: Segment extraction filters only on `scenario_run_id`. Reusing a trace file across a reset DB, which the default paths allow, mixes in a previous run's lines and overwrites `run_NNNN.jsonl` with nothing flagging it. No test covers this.
+  Finding 3: No TC-1 test runs the real process to check that UNRECOVERED gives a non-zero exit code. The subprocess tests only cover argparse exits. The exception paths (re-raised `HARNESS_ERROR`, missing `ANTHROPIC_API_KEY`) have no tested CLI exit behaviour or output.
+  Finding 4: The `--help` test's `count >= 2` assertion is already met by argparse's own choices listing, so TC-2 does not show that the scenario descriptions are present. It should assert on the description text itself, for example "renamed pipeline_silver.amount to amt".
+
+Note: in the verification record as supplied, the "Scope Decisions" section ends after its heading line. The full text appears only in the diff.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | No listed invariant. The run's status is committed before the segment is built, so nothing is lost. A malformed trace line (e.g. a partial line isolated after a kill) makes the CLI exit non-zero after a RECOVERED run — logged for Session 4, whose kill-and-restart path will produce exactly such lines | N/A |
+| 2 | ACCEPT | No listed invariant. Run ids restart only when the database is recreated; the default `data/` paths are reset together (the trace is runtime data, not committed). Logged as FRAGILITY | N/A |
+| 3 | ACCEPT | No listed invariant. `sys.exit(main())` is the standard contract, and the in-process tests cover every return value. A missing key ends UNRECOVERED (INFRASTRUCTURE_FAILURE, covered in `test_orchestrator.py`) → exit 1; HARNESS_ERROR re-raises → Python exits 1 with a traceback | N/A |
+| 4 | ACCEPT | No listed invariant. The weak assertion is noted; the help text is shown verbatim in Run 1 of this record | N/A |
+
+### Code Review
+Task 3.4 enforces no invariant. Items to review in `scripts/run_scenario.py` (results left blank):
+- `--scenario {SCHEMA_DRIFT|MISSING_COLUMN|PROMPT_INJECTION} [--seed N]`; CLI only, no UI/server.
+- Prints the ScenarioRun's final status and the path to its trace segment; exit 0 iff RECOVERED.
+- Thin wrapper: all behaviour lives in `src/orchestrator.py` (no path around the funnel).
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 3.4
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S03.md, sessions/VERIFICATION_RECORD_S03.md,
+                    scripts/run_scenario.py, tests/session3/test_cli.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    scripts/run_scenario.py — write_trace_segment
+Functions modified: scripts/run_scenario.py — parse_args (help epilog), main (trace segment)
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- "Path to its trace segment": the run's lines are copied from the JSONL trace into
+  `<trace dir>/trace_segments/run_<id>.jsonl`, and that path is printed. The main trace file is
+  untouched.
+- Exit codes: 0 RECOVERED, 1 UNRECOVERED, 2 bad arguments (argparse). An unexpected harness
+  error is re-raised after the orchestrator completes the run, so the process fails loudly.
+- `--db` / `--trace` default to `data/harness.db` / `data/trace.jsonl`; both exist so tests
+  and dry runs can use throwaway paths.
+- `--dry-run` (used by the Session 3 Integration Check) is **not** part of Task 3.4's prompt and
+  is not implemented here — see `SESSION_LOG_S03.md`.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

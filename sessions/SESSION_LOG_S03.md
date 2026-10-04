@@ -86,8 +86,8 @@ INV-D6 (Session 5) is supported by making `inject(scenario_type, seed)` fully re
 |---------|-----------|--------|--------|
 | 3.1 | Failure Injector (3 scenarios) | Completed | 3534810 |
 | 3.2 | Agent/Planner Core Loop | Completed | 4d717c6 |
-| 3.3 | Scenario Orchestrator | Completed | see S3.3 commit |
-| 3.4 | CLI Entry Point | | |
+| 3.3 | Scenario Orchestrator | Completed | 2922e2e |
+| 3.4 | CLI Entry Point | Completed | see S3.4 commit |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 SKIPPED is set by the engineer manually outside of any execution prompt.
@@ -137,6 +137,9 @@ Leave this table empty if the session was not resumed.
 | 3.2 | The production Anthropic client keeps SDK defaults (2 automatic retries, ~10-minute timeout). Combined with Task 4.1's infrastructure retries, one AgentAPIError can hide several requests and a long wait | MISSING | Task 4.1 sets the retry/timeout policy explicitly |
 | 3.2 | A `PlanningError` (model refusal) leaves no trace event; only successful plans are traced | MISSING | Task 3.3 orchestrator / Session 4 loop records the planning outcome |
 | 3.3 | Verification checks schema, row count and null rate only (`docs/INVARIANTS.md` "Explicitly Not Defined"), not values. A PROMPT_INJECTION backfill of any non-NULL value — including an attacker-chosen one — passes. Live runs backfilled the true amount from bronze (304.99), but nothing enforces that | FRAGILITY | Accept for MVP; state it plainly in the demo and threat model (Session 6) |
+| 3.4 | `scripts/run_scenario.py`'s trace-segment extraction calls `json.loads` on every trace line; a malformed or partial line (the Trace Logger isolates partial lines after a kill rather than deleting them) makes the CLI exit non-zero after the run has already completed (Challenge Finding 1, ACCEPTed) | BUG | Session 4 (kill-and-restart demo): skip unparseable lines when extracting segments |
+| 3.4 | Trace segments are selected by `scenario_run_id` only; recreating the database while keeping `data/trace.jsonl` makes run ids collide with old trace lines (Challenge Finding 2) | FRAGILITY | Reset `data/harness.db` and `data/trace.jsonl` together; consider a run-unique id in Session 4 |
+| 3.4 | `data/trace.jsonl` and `data/trace_segments/` are runtime artefacts and are not committed (only `data/*.db*` is gitignored) | FRAGILITY | Session 6 captures curated traces under `docs/traces/` (Task 6.4); consider gitignoring the runtime trace |
 
 Nature values: BUG | MISSING | FRAGILITY
 Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)

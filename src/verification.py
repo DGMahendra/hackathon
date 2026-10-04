@@ -8,7 +8,8 @@ read-only.
 Checks, against the expectation registered for the run's scenario_type:
   (1) the target table has every expected column (with its declared type, when given);
   (2) the row count is within [min_rows, max_rows];
-  (3) each expected column's null rate is at most max_null_rate.
+  (3) each expected column's null rate is at most max_null_rate (columns listed in
+      `nullable` are exempt — the threshold is never loosened for the whole table).
 A scenario_type with no registered expectation fails closed. Real expectations are
 registered with the scenario definitions (Session 3).
 """
@@ -45,6 +46,7 @@ class Expectation:
     min_rows: int
     max_rows: int
     max_null_rate: float
+    nullable: tuple = ()  # expected columns exempt from the null-rate check (any rate allowed)
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ def _expectation_problem(scenario_type, expectation):
         return "expectation needs 0 <= min_rows <= max_rows"
     if not 0.0 <= expectation.max_null_rate <= 1.0:
         return "expectation max_null_rate must be within [0, 1]"
+    if not set(expectation.nullable) <= {name for name, _ in expectation.columns}:
+        return "expectation nullable columns must be expected columns"
     return None
 
 
@@ -147,7 +151,8 @@ def _check_rows(conn, expectation: Expectation, actual: dict) -> list:
     failures = []
     if not expectation.min_rows <= total <= expectation.max_rows:
         failures.append(f"row count: {table} has {total} rows, expected {expectation.min_rows}..{expectation.max_rows}")
-    for name in (name for name, _ in expectation.columns if name in actual):
+    checked = (name for name, _ in expectation.columns if name in actual and name not in expectation.nullable)
+    for name in checked:
         nulls = conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{name}" IS NULL').fetchone()[0]
         rate = nulls / total if total else 0.0
         if rate > expectation.max_null_rate:

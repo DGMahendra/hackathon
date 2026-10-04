@@ -473,3 +473,189 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:**
+
+---
+
+## Task 1.4 — Trace Logger
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md Session 1
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Valid event emitted | Exactly one parseable JSON line written | N/A | PASS |
+| TC-2 | Event with a non-existent `scenario_run_id` | Rejected before anything is written | N/A | PASS |
+| TC-3 | 100 sequential emits | 100 valid, independently parseable lines | N/A | PASS |
+
+Verification command: `python scripts/emit_test_trace.py | python -m json.tool && python -m pytest tests/session1/test_trace_logger.py -v`
+- Run 1 (pytest only, before the command): 26 passed, 1 failed —
+  `test_nonexistent_scenario_run_rejected_before_writing["1"]`: the string `"1"` was accepted
+  as a run id, because SQLite matches it to integer id 1, and the trace would have recorded
+  `"scenario_run_id": "1"`. Fixed: ids must be `int` (bool excluded); covered by
+  `test_non_integer_ids_rejected_before_writing` (6 cases).
+- Run 2: `emit_test_trace.py` output parsed by `json.tool`; **31 passed** (exit 0).
+  `tests/session1/`: 240 passed.
+- Run 3 (after the Finding 1–4 dispositions): `json.tool` exit 0; **48 passed** (exit 0).
+  `tests/session1/`: 257 passed.
+Beyond TC-1 to TC-3, the tests cover: each allowed event_type; a run-level event with
+attempt_id None; the file is JSONL, not an array; newlines inside the payload stay on one
+line; appends preserve existing lines; emit never writes the database; an attempt that does
+not exist, or belongs to another run, is rejected; unknown event_type; payloads that cannot
+be serialized, plus NaN and Infinity; a missing database is rejected and not created; an
+existing trace is unchanged after a rejection; the script prints exactly one line and leaves
+`data/trace.jsonl` untouched.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S01 "Task 1.4"` (Task 1.4 files staged; exit 0). The diff it saw
+also included `dataops-agent-pbvi-artifacts.zip` as a binary change. That change was made
+outside this task and is unstaged. Full output, verbatim:
+
+Running challenge agent for S01 Task 1.4...
+## CC Challenge — Task 1.4 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S01
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | The trace file already exists but doesn't end in `\n`, for example after a kill or partial write during an earlier `_append_line`. `open(..., "ab")` then attaches the next record to the broken line. | One line comes out unparseable, and it swallows a valid event. That breaks the "each line valid standalone JSON" requirement. The kill-and-restart demo is the most likely way to hit it. No test seeds a broken last line. | INV-D4 (event becomes unreadable, so it can't be attributed) |
+| 2 | An integer id outside SQLite's 64-bit range (e.g. `2**63`) passes `_is_id`, then makes `conn.execute` raise `OverflowError`. That is not caught, so it doesn't come back as `TraceError`. | Nothing is written, but the rejection contract ("invalid event → TraceError") is broken and untested. Callers in later gates that catch `TraceError` won't handle it. | NONE (nothing written) |
+| 3 | The database file exists but isn't a SQLite database (corrupt or garbage). This raises `sqlite3.DatabaseError`, which `except sqlite3.OperationalError` doesn't catch. Also untested: a valid SQLite file with no harness tables (raises "no such table", which is caught). | Same as #2: the error escapes outside `TraceError`. Only a *missing* database is tested. | NONE |
+| 4 | `tool_call` or `policy_decision` events sent with `attempt_id=None` are accepted. The 100-emit test does this on purpose for half its events. | INV-D4 says "attempt_id when applicable". Nothing defines or enforces which event types need an attempt, so attempt-scoped events can be traced without the attempt they belong to. | INV-D4 |
+| 5 | A rejection when the trace file already exists and the database is missing or unreadable. Only the case with no trace file is tested. | It's minor, but "existing trace unchanged after rejection" is only checked for the unknown-run path. | INV-D4 |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | `f"file:{_db_path.as_posix()}?mode=ro"` is a valid SQLite URI for any path. A path containing `?`, `#` or `%` gets misread: the query or fragment starts too early, or `%xx` is decoded. The database opened then isn't the configured one, or the read fails. | `_read_references` builds the URI with no percent-encoding. Tests only use `tmp_path`. | YES |
+| 2 | A read-only connection can always read the WAL-mode database while the State Manager's connection is open. This needs the `-shm`/`-wal` sidecar files to be reachable. | `mode=ro` together with INV-S3 WAL mode. Only covered indirectly, through fixtures where the database is writable. | YES (partially) |
+| 3 | A single `write()` of one line is never partially applied. `fsync` comes after the write, but nothing recovers from a short write or an error between write and fsync. | `_append_line` | NO (needs fault injection or a real kill) |
+| 4 | `payload` can be any JSON-serializable value: a list, string, `None` or a number, not just a dict. All tests use dicts, and no type contract is stated. | `emit` signature and `_serialize` | YES |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-D4: the stated enforcement point is "Foreign-key constraint or referential integrity check on TraceEvent writes". No TraceEvent row is ever written, so the database's foreign keys are never used and only the application-level check applies. (Already logged as MISSING in the Session Log; listed here for traceability.) | NO (DB-level) / YES (app-level) | YES (app-level only) |
+| INV-D4: "attempt_id when applicable" | NO (no rule for when it applies) | NO |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Atomicity between a State Manager checkpoint and its matching `emit`: a rolled-back transition gets traced, or a kill between checkpoint and emit leaves it untraced | Already logged as FRAGILITY; needs gate integration (Session 2) |
+| Kill during write or fsync in a real process | Needs external process control or fault injection (the kill-and-restart demo, later session) |
+| Concurrent emitters appending to the same trace file | Concurrent execution is excluded by Claude.md §1 and INV-S7 |
+| Disk full or permission denied on `data/trace.jsonl` | Needs external filesystem state |
+| Judges reading the trace in practice | Human |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+- **Finding 1:** If the trace file doesn't end in `\n` (left over from an earlier partial write or kill), the next `emit()` attaches its record to the broken line. That leaves an unparseable line and loses a valid event. Untested. Testable by writing a truncated line into the trace file, calling emit, and asserting every line parses. Possible fix: check or repair the trailing newline before appending.
+- **Finding 2:** Some invalid events raise errors other than `TraceError`, and these paths are untested. Out-of-range integer ids (`2**63`) raise `OverflowError`. A corrupt or non-SQLite database file raises `sqlite3.DatabaseError`, which `except sqlite3.OperationalError` doesn't catch. A database with no schema (caught) is also untested.
+- **Finding 3:** INV-D4's "attempt_id when applicable" is neither defined nor enforced. Attempt-scoped `tool_call` and `policy_decision` events are accepted with `attempt_id=None`, and the tests rely on that. The engineer needs to decide the applicability rule, or accept and record that every event type may be run-level.
+- **Finding 4:** The read-only URI is built from the raw path without percent-encoding. A database path containing `?`, `#` or `%` makes the logger read the wrong file or fail. Untested; testable with a `tmp_path` subdirectory whose name contains those characters.
+
+**Verdict:** FINDINGS — 4
+
+CC probe (throwaway files outside the repo, no code changed):
+- Finding 1: the trace file was seeded with a truncated line `{"partial": tru` and no newline;
+  after `emit()` the file holds one line, and it does not parse. The valid event is lost.
+  Confirmed.
+- Finding 2: id `2**63` → `OverflowError`; a garbage database file → `sqlite3.DatabaseError`.
+  Neither comes back as `TraceError`. Nothing is written in either case. Confirmed.
+- Finding 3: by design in the current build (run-level events may omit attempt_id); the
+  applicability rule is undefined in the task prompt and INV-D4.
+- Finding 4: valid databases in directories named `hash#dir` and `pct%41dir` → `TraceError`
+  "cannot read database". Valid events are rejected. Confirmed. (`?` cannot be tested on
+  Windows file names.)
+
+**Untested scenarios:**
+See challenge output above (5 rows).
+
+**Unverified assumptions:**
+See challenge output above (4 rows).
+
+**Invariant coverage gaps:**
+See challenge output above — INV-D4 (DB-level FK unused; "when applicable" undefined).
+
+**Scope boundary observations:**
+NONE raised by the challenge agent.
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositions set by the engineer (2026-10-04). The engineer directed that the Challenge Agent not be run again after they were applied.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST | `_separator_for_partial_line`: if the trace file is non-empty and its last byte is not `
+`, a newline goes in the same write as the new line. The partial line is never deleted or altered. Tests: `test_truncated_final_line_is_isolated_and_new_event_parses` (the fragment is kept byte-for-byte on its own line; the events before and after both parse), `test_no_separator_added_when_file_ends_cleanly`, `test_empty_existing_file_gets_no_leading_newline`. Mutation check: dropping the separator fails the truncated-line test | PASS |
+| 2 | TEST | `_read_references` turns `sqlite3.DatabaseError` (which includes OperationalError) and `OverflowError` into `TraceError`, chained with `from`, never swallowed. Tests: `test_out_of_range_id_raises_trace_error_from_overflow` (2**63 as run id, 2**63 as attempt id, -(2**63)-1), `test_corrupt_database_raises_trace_error_from_database_error`, `test_database_without_harness_tables_raises_trace_error`, and the missing-database test now asserts the cause. Each asserts `__cause__` type and that no trace file was written | PASS |
+| 3 | TEST | Engineer rule: tool_call and policy_decision require attempt_id; state_transition may omit it (run_started / run_complete are run-level). `ATTEMPT_REQUIRED_EVENT_TYPES` in `src/trace_logger.py`. Tests: `test_every_event_type_accepted_with_attempt_id` (3), `test_attempt_scoped_event_without_attempt_id_rejected` (2), `test_run_level_event_without_attempt_accepted` (state_transition), `test_attempt_rule_covers_exactly_tool_call_and_policy_decision`, and `test_attempt_from_another_run_rejected` now runs for all 3 event types. The 100-emit test now uses attempt_id None only for state_transition | PASS |
+| 4 | TEST | The read-only URI is built with `Path(db).resolve().as_uri() + "?mode=ro"` (uri=True), not string concatenation. Test: `test_database_path_with_hash_percent_and_space`: directory `run #1 100% done %41`, database `harness db.db`, Windows path. Emit succeeds; validation provably reads that database (an unknown id is rejected); no stray file. Mutation check: the old concatenated URI fails this test | PASS |
+
+### Code Review
+Invariant text is embedded in the Task 1.4 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review in `src/trace_logger.py` (results left blank):
+- INV-D4: `scenario_run_id` (and `attempt_id` when given, belonging to that run) is
+  validated against the database before any byte is written to the trace file.
+- `event_type` restricted to tool_call, state_transition, policy_decision.
+- Each emit writes exactly one standalone JSON line (no wrapping array).
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 1.4
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S01.md, sessions/VERIFICATION_RECORD_S01.md,
+                    src/trace_logger.py (new), scripts/emit_test_trace.py (new),
+                    tests/session1/test_trace_logger.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/trace_logger.py — init, emit, _validate_references, _is_id,
+                    _read_references, _serialize, _append_line,
+                    _separator_for_partial_line;
+                    scripts/emit_test_trace.py — emit_synthetic_event, main
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- `emit()` writes the JSONL file only. It does not insert `TraceEvent` rows: the task prompt
+  specifies a JSONL append, with ids "validated against the DB before writing". No code writes
+  the `TraceEvent` table yet; logged as an Out of Scope Observation.
+- `init(db_path, trace_path)` sets the database and trace file, mirroring
+  `state_manager.init()`. Defaults: `data/harness.db`, `data/trace.jsonl`.
+- The database is opened read-only (`Path.resolve().as_uri()` + `?mode=ro`, Challenge
+  Finding 4), so a missing database is an error, never silently created. Every database
+  failure or id overflow is raised as `TraceError`, chained to its cause (Finding 2).
+- A partial final line is isolated with a newline, never altered (Finding 1).
+- INV-D4 "when applicable": tool_call / policy_decision require attempt_id (engineer
+  decision, Finding 3).
+- Ids must be integers (bool excluded); attempt_id may be None only for state_transition.
+- Each line holds timestamp (UTC, `...Z`), scenario_run_id, attempt_id, event_type and
+  payload. It is strict JSON (`allow_nan=False`), written in a single append and fsynced.
+- `emit()` returns the record it wrote.
+- `scripts/emit_test_trace.py` uses a temporary database and trace file and creates its
+  run and attempt through the State Manager (the only write path), so the judge-facing
+  `data/trace.jsonl` never holds synthetic events.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:**

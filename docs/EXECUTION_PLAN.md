@@ -321,9 +321,20 @@ pending approval"), and return without executing or incrementing attempts_used
 (INV-D2: this applies equally to REQUIRE_APPROVAL as it does to DENY — corrected at
 Phase 6, Task 1.2). (2) If ALLOW, call tool_validation.validate(action); if REJECTED, do not
 execute — trigger the bounded re-plan path (implemented fully in Session 4). (3) If
-VALID, call state_manager.checkpoint(..., stage='pre_execute'), apply the action to
-the pipeline, call state_manager.checkpoint(..., stage='post_execute') (INV-S3). (4)
-Call verification.verify(scenario_run_id) and record verification_result (INV-S5). No
+VALID, call state_manager.execute_and_checkpoint(scenario_run_id, attempt_id,
+apply_fn, state) — NOT separate pre_execute/post_execute checkpoint() calls;
+checkpoint() rejects both of those stage values directly, by design, as of Task 1.3.
+execute_and_checkpoint() itself writes the pre_execute checkpoint as its own
+transaction, then runs apply_fn (the actual pipeline mutation defined by this task)
+and the post_execute checkpoint together atomically (INV-S3 — see ARCHITECTURE.md D3
+superseding refinement for why this replaced the original two-checkpoint design).
+apply_fn must not commit on its own connection — it returns its execution_result and
+lets execute_and_checkpoint control the transaction boundary; execute_and_checkpoint
+enforces this with a runtime guard, not just a convention. apply_fn must also never
+return None — it must return a real execution_result describing what changed, since
+a null result paired with action_applied=True would leave the trace with no record
+of what was actually done (INV-D4 depends on this). (4) Call
+verification.verify(scenario_run_id) and record verification_result (INV-S5). No
 other module or function may write to the pipeline directly (INV-S1: Execute may only
 be invoked through the shared funnel function, which enforces Policy evaluation
 followed by Tool Validation, in that order, before any action reaches the pipeline).

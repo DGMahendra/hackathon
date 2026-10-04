@@ -262,7 +262,10 @@ Implement src/tool_validation.py exposing validate(tool_call) -> ValidationResul
 shapes against a per-tool schema. This runs independently of and after the Policy
 Layer decision in the funnel function (Task 2.4) — do not have this module call
 policy_layer directly; ordering is enforced by the funnel function, not by this
-module.
+module. Each allowlisted tool name must map to a harness-owned implementation with
+validated, typed parameters. The agent never supplies callables, and never supplies raw
+SQL that is executed verbatim (PROMPT_INJECTION relies on this: injected text must
+never become executable SQL).
 ```
 **Test cases:** Well-formed tool call → VALID; tool call with missing required
 parameter → REJECTED; tool call to an unregistered tool name → REJECTED.
@@ -333,7 +336,13 @@ lets execute_and_checkpoint control the transaction boundary; execute_and_checkp
 enforces this with a runtime guard, not just a convention. apply_fn must also never
 return None — it must return a real execution_result describing what changed, since
 a null result paired with action_applied=True would leave the trace with no record
-of what was actually done (INV-D4 depends on this). (4) Call
+of what was actually done (INV-D4 depends on this). apply_fn is built only from
+allowlisted harness code with validated parameters (Task 2.2) — never from
+agent-supplied code or SQL. The authorizer mechanism state_manager uses to block
+transaction control during apply_fn may also be used to enforce INV-S8's table scope
+(its INSERT/UPDATE/DELETE callbacks carry the table name) — consider this when
+implementing the runtime guard. Emit each trace event AFTER its corresponding commit,
+so the trace never claims something that did not commit. (4) Call
 verification.verify(scenario_run_id) and record verification_result (INV-S5). No
 other module or function may write to the pipeline directly (INV-S1: Execute may only
 be invoked through the shared funnel function, which enforces Policy evaluation
@@ -532,16 +541,20 @@ incrementing attempts_used. Only a genuine tool-validation rejection or verifica
 failure consumes the shared budget. On reaching MAX_SCENARIO_ATTEMPTS without a PASS,
 set ScenarioRun.status = UNRECOVERED and write a final trace event. If API-level
 retries are exhausted without ever getting a valid plan, mark the ScenarioRun as
-UNRECOVERED with failure_reason = INFRASTRUCTURE_FAILURE, distinct from a normal
-budget-exhaustion UNRECOVERED, so eval reporting doesn't conflate the two causes
-(consistent with INV-D3's failure_reason design).
+UNRECOVERED and emit a state_transition trace event whose payload records
+reason=INFRASTRUCTURE_FAILURE. Do NOT write failure_reason on any Attempt row: no
+Attempt exists at that point (planning never reached the gates), and INV-D3 restricts
+failure_reason to attempts where tool validation was REJECTED or verification FAILED.
+The ablation runner (Task 5.3) records cause=INFRASTRUCTURE_FAILURE in its own result
+row, so eval reporting does not conflate this with a budget-exhaustion UNRECOVERED.
 ```
 **Test cases:** A scenario requiring 2 verification retries then passing → RECOVERED,
 `attempts_used = 3`; a scenario mixing 1 tool-validation rejection + 2 verification
 failures exhausts the budget at 3 total (not 3 + 2 = 5) → UNRECOVERED; a simulated
 AgentAPIError followed by a successful retry does not increment attempts_used; API
-retries exhausted → UNRECOVERED with failure_reason = INFRASTRUCTURE_FAILURE, not
-counted against the same statistic as a genuine recovery failure.
+retries exhausted → UNRECOVERED, with an INFRASTRUCTURE_FAILURE trace event and no
+Attempt row carrying failure_reason, not counted against the same statistic as a
+genuine recovery failure.
 **Verification command:**
 ```bash
 python -m pytest tests/session4/test_retry_budget.py -v
@@ -583,6 +596,11 @@ provable fact, not an inference. Resume behavior distinguishes exactly two cases
 
 There is no third case requiring idempotent reconciliation — Task 1.3's atomicity
 guarantee means no state can exist where it's unclear whether the action ran.
+
+On every resume, emit a state_transition trace event recording what resume() found
+(last_stage and action_applied). This closes the one evidentiary gap left by trace
+emission not being atomic with the commit (see ARCHITECTURE.md Section 8): if a kill
+landed between a commit and its trace line, the resume event is the record.
 
 Write scripts/simulate_crash_resume.py which tests both cases by injecting a kill at
 multiple points relative to the execute_and_checkpoint() transaction boundary
@@ -839,8 +857,8 @@ naturally-occurring one, a companion note (docs/traces/failure_trace.README.md) 
 this explicitly.
 **Verification command:**
 ```bash
-python -m json.tool docs/traces/success_trace.jsonl > /dev/null && \
-python -m json.tool docs/traces/failure_trace.jsonl > /dev/null
+python -m json.tool --json-lines docs/traces/success_trace.jsonl > /dev/null && \
+python -m json.tool --json-lines docs/traces/failure_trace.jsonl > /dev/null
 ```
 **Invariant enforcement:** INV-D4 (consumed, not newly enforced).
 **Regression classification:** NOT-REGRESSION-RELEVANT — one-time artifact capture.

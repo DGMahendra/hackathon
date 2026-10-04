@@ -233,7 +233,13 @@ fields.
 ## INV-D4
 
 **Condition:** Every TraceEvent references a valid scenario_run_id (and attempt_id
-when applicable); no orphan trace events.
+when applicable); no orphan trace events. *("When applicable" clarified at Phase 6,
+Task 1.4: `tool_call` and `policy_decision` events always occur within an attempt and
+REQUIRE an attempt_id, which must belong to the same scenario_run_id;
+`state_transition` events may omit it, since run_started and run_complete are
+run-level. Enforced by the trace logger's pre-write validation. The MVP realizes the
+trace as the JSONL file; the TraceEvent database table is not populated — see
+ARCHITECTURE.md Section 8.)*
 **Category:** Data
 **Scope:** TASK-SCOPED *(proposed — Trace Logger task and schema)*
 **Authorship:** CD-drafted (confirmed by engineer)

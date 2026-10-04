@@ -285,6 +285,17 @@ internals).
   state_transition | policy_decision), `payload`, `timestamp`
 - The append-only record that is serialized to the JSONL trace file; one line per
   event.
+- *MVP realization (decided at the Session 1 gate, Phase 6):* the trace is realized as
+  the JSONL file only. `src/trace_logger.py` validates `scenario_run_id` and
+  `attempt_id` against the database (read-only) before appending one line; the
+  `TraceEvent` database table exists in the schema but is intentionally not populated
+  in the MVP. Known limitation: trace emission is not atomic with the SQLite
+  checkpoint commit, so a kill between a commit and its trace line can leave the trace
+  missing the final event, but never claiming an event that did not commit. Mitigation:
+  trace lines are emitted AFTER the corresponding commit, and `resume()` emits a
+  reconciliation `state_transition` event recording what it found (see Task 4.2).
+  Upgrade path (parking lot): write TraceEvent rows inside the checkpoint transaction
+  and export JSONL from them.
 
 **PipelineState (Bronze / Silver / Gold)**
 - The actual synthetic data tables being operated on — separate from harness metadata

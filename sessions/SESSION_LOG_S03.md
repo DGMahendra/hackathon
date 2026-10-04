@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress (resumed at the Integration Check: implementing `--dry-run` per engineer decision)
+**Status:** Integration check passed — merge pending
 
 ## Pre-Build Validation
 
@@ -156,10 +156,26 @@ Disposition at sign-off: BACKLOG | DISMISS | IMMEDIATE (requires loop)
 
 ---
 
+## Session Integration Check
+
+**Run:** 2026-10-04 at `5ae798c`, after the engineer's `--dry-run` decision.
+
+```bash
+python -m pytest tests/session3/ -v && python scripts/run_scenario.py --scenario SCHEMA_DRIFT --dry-run
+```
+
+**Result:** exit 0. `tests/session3/`: 118 passed, including the live `claude-sonnet-5` tests.
+`--dry-run`: ScenarioRun 1 (SCHEMA_DRIFT, seed 42) RECOVERED, 7 trace lines, in a temporary database
+and trace that were discarded (`data/` untouched). Regression: `tests/session1` + `tests/session2`
+771 passed. First attempt at `9513b3e`: exit 2 (`--dry-run` unrecognized) → SESSION BLOCKED (see
+Deviations).
+
+---
+
 ## Session Completion
-**Session integration check:** [ ] PASSED
+**Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
-**Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
+**Blocked tasks resolved:** [x] Yes — Task 3.2 (API key, then credit) and the Integration Check (`--dry-run`), each resolved by the engineer; see Resumed Sessions
 **PR raised:** [ ] Yes — PR #: [branch] → main
-**Status updated to:** 
-**Engineer sign-off:** 
+**Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
+**Engineer sign-off:** DEFERRED — engineer review at end of build

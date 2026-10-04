@@ -176,6 +176,6 @@ Deviations).
 **Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [x] Yes — Task 3.2 (API key, then credit) and the Integration Check (`--dry-run`), each resolved by the engineer; see Resumed Sessions
-**PR raised:** [ ] Yes — PR #: [branch] → main
+**PR raised:** [x] Yes — PR #3: session/s03_agent_core → main (https://github.com/DGMahendra/hackathon/pull/3)
 **Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
 **Engineer sign-off:** DEFERRED — engineer review at end of build

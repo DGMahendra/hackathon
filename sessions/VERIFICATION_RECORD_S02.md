@@ -151,3 +151,155 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 2.2 — Tool Validation
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Well-formed tool call | VALID | N/A | PASS |
+| TC-2 | Tool call with a missing required parameter | REJECTED with reason | N/A | PASS |
+| TC-3 | Tool call to an unregistered tool name | REJECTED with reason | N/A | PASS |
+
+Verification command: `python -m pytest tests/session2/test_tool_validation.py -v`
+- Run 1: **131 passed** (exit 0).
+- Run 2 (after the Challenge Finding 1–2 fixes): **160 passed** (exit 0).
+Beyond TC-1 to TC-3, the tests cover: SQL-looking text is a VALID backfill *value* (it is data,
+bound by the primitive); malformed structure and non-dict params are rejected; unknown
+parameters (`sql`, `url`, `source_table`, `callback`) are rejected; tables outside the
+pipeline are rejected (harness, `sqlite_master`, schema-qualified, wrong case, injected);
+unsafe identifiers are rejected (quotes, `;`, spaces, a leading digit, 64 characters, the
+`sqlite_` prefix, newline, non-ASCII); bad column types and bad values are rejected (bool,
+out-of-range int, NaN, inf, text over 1024 characters, list, dict, bytes); renaming to the
+same name is rejected; all problems are reported together; the call is not mutated; the
+module neither imports nor calls `policy_layer`; no tool has a SQL or callable parameter.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S02 "Task 2.2"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S02 Task 2.2...
+## CC Challenge — Task 2.2 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S02
+
+*Note: I found these by reading the code. I could not run anything to confirm them, because the command needed approval in this non-interactive session. Finding 1 follows directly from how Python 3 `sorted()` behaves.*
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | `params` has unknown keys of mixed types, e.g. `{**WELL_FORMED["backfill_column"], "sql": "x", 1: "y"}`. `_parameter_problem` calls `sorted(set(params) - set(schema))`, which compares `int` with `str` and raises `TypeError` instead of returning REJECTED. | The agent controls the parsed tool-call JSON, so it can crash the validator. How safe this is depends on how Task 2.4 handles exceptions, so it is not a closed REJECTED path. Only string keys are tested. | INV-S1 (the validation stage does not return a result) |
+| 2 | SQLite rowid aliases (`rowid`, `oid`, `_rowid_`) are accepted as `column` / `old_name` / `new_name`. They match `IDENTIFIER` and are not `sqlite_`-prefixed. `backfill_column(table, "rowid", 1)` passes and would target the hidden rowid of every row. | This is an agent-chosen identifier that reaches a write against implicit row identity, not a declared pipeline column. No test covers it. | INV-S8 (scope of pipeline writes, indirectly) |
+| 3 | SQL reserved words as identifiers (`SELECT`, `FROM`, `TABLE`, `NULL`) are accepted. Nothing tests them, and nothing records that the Task 2.4 primitive must quote identifiers. | If the primitive puts identifiers in unquoted, a keyword column produces broken or reinterpreted DDL. "Safe identifier" is claimed but only checked for character class. | NONE |
+| 4 | `rename_column` with names that differ only in case (`Amount` → `amount`) passes the "identical" check. SQLite identifiers are case-insensitive. | The "rename to same name is rejected" rule is only partly enforced. The test covers exact equality only. | NONE |
+| 5 | An unregistered tool name of unbounded length or with injection text is echoed verbatim into `reason` via `{tool!r}`. Neither length nor content is tested. | `reason` flows into the trace and back to the agent, so agent-controlled text is amplified into the judge-inspected evidence and the model context. | INV-D4 (quality of trace evidence) |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | Every key in `params` is a string, so `sorted()` works on the missing and unknown sets. | `_parameter_problem` sorts set differences without coercing types. | YES |
+| 2 | Any identifier that matches `[A-Za-z_][A-Za-z0-9_]{0,62}` and is not `sqlite_*` is a legitimate user column. | The `_identifier` check has no deny-list for `rowid`/`oid`/`_rowid_` or reserved words. | YES |
+| 3 | `TOOL_SCHEMAS` is a mutable module-level `dict`, assumed never to change at runtime. Nothing freezes it or tests for it. | The allowlist is a plain dict, so any importer can add a tool. | YES |
+| 4 | `ValidationResult` keeps status and reason consistent: VALID ⇒ reason None, REJECTED ⇒ reason non-null. Nothing enforces this; `ValidationResult(VALID, "x")` or `ValidationResult("OK")` can be constructed. | Frozen dataclass with no `__post_init__` check. This matters for INV-D3 (failure_reason non-null iff failed) once it is consumed downstream. | YES |
+| 5 | `int`/`float`/`str` subclasses (e.g. `IntEnum`, str subclasses with overridden `__str__`) are safe to bind. | `isinstance` checks accept subclasses. | YES |
+| 6 | The backfill value's type is compatible with the target column's declared type. | Not checked: the validator has no DB state. | NO |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S1 | YES — the validation stage must always return a result for the funnel to record on the Attempt | NO — no test shows `validate()` never raises on arbitrary JSON-shaped input (see Untested #1) |
+| INV-D3 | YES — `ValidationResult.reason` is the source of `failure_reason` for validation failures | NO — status/reason consistency isn't enforced or tested at the type level |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Each `TOOL_SCHEMAS` name maps 1:1 to a harness-owned implementation | Requires the Task 2.4 pipeline-write primitive (set-equality test deferred to 2.4) |
+| Funnel runs Policy before Validation; REQUIRE_APPROVAL/DENY never reach `validate` | Requires the Task 2.4 funnel |
+| Backfill values are bound as parameters, never interpolated | Requires the Task 2.4 primitive |
+| Identifiers are quoted when interpolated into DDL/DML | Requires the Task 2.4 primitive |
+| Value type matches the target column's affinity; target column/table exists | Requires DB state at execution time |
+| End-to-end PROMPT_INJECTION: injected text never becomes executable SQL | Requires Session 3+ scenario/agent integration |
+
+### Challenge Verdict
+
+FINDINGS — 3 item(s) require engineer disposition before commit.
+  **Finding 1:** `validate()` raises `TypeError` instead of returning REJECTED when `params` has unknown keys of mixed types (e.g. `{"table":…, "column":…, "value":…, "sql":"x", 1:"y"}`), because `sorted()` compares `int` with `str` in `_parameter_problem` (`src/tool_validation.py`). Add a test that `validate()` returns REJECTED for non-string or mixed-type param keys. This also covers the INV-S1 gap: the validator must always produce a recordable result.
+  **Finding 2:** The rowid aliases `rowid`, `oid` and `_rowid_` pass `_identifier` and are accepted as `column` in `backfill_column`, `add_column` and `rename_column`. Either reject them, with a test, or record an ACCEPT rationale explaining why writes to a table's implicit rowid are safe.
+  **Finding 3:** `ValidationResult` does not enforce status/reason consistency (VALID with a reason, REJECTED without one, or an arbitrary status string are all constructible). Its `reason` feeds INV-D3's `failure_reason`. Either add a `__post_init__` guard with tests, or ACCEPT with rationale.
+
+**Verdict:** FINDINGS — 3
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (INV-S1) | `_structure_problem` now rejects non-string parameter names ("parameter names must be strings") before any sorting, so `validate()` always returns a result the funnel can record. Tests: `test_non_string_parameter_names_rejected_not_raised` (3 tools × 5 key types: int, None, tuple, float plus str, bytes), `test_validate_never_raises_on_json_shaped_input` (4) | PASS |
+| 2 | TEST (INV-S8) | `_identifier` rejects the SQLite rowid aliases `rowid`, `oid` and `_rowid_` in any case (`ROWID_ALIASES`). Tests: `test_rowid_alias_rejected_as_identifier` (6 spellings × 4 parameter positions), `test_names_merely_containing_rowid_are_allowed` (4) | PASS |
+| 3 | ACCEPT | INV-D3 is not on the TEST list. `ValidationResult` is only built inside `validate()`, which always pairs VALID with None and REJECTED with a reason; the funnel (Task 2.4) writes `failure_reason` from it, and the schema's INV-D3 CHECK rejects any inconsistent Attempt row at write time | N/A |
+
+### Code Review
+Task 2.2 enforces no invariant directly (INV-S1 is enforced structurally by Task 2.4's
+funnel, which calls this module). Items to review in `src/tool_validation.py` (results left blank):
+- Tool name checked against an allowlist; parameters checked against a per-tool schema
+  (required, no extras, types, value domains).
+- No parameter can carry raw SQL that is executed verbatim: identifiers must match a
+  strict pattern; values are data only (bound by the Task 2.4 primitive).
+- The module does not call `policy_layer` — the funnel enforces ordering.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 2.2
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S02.md, sessions/VERIFICATION_RECORD_S02.md,
+                    src/tool_validation.py (new), tests/session2/test_tool_validation.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/tool_validation.py — validate, _structure_problem, _parameter_problem,
+                    _table, _identifier, _column_type, _scalar_value (+ ValidationResult,
+                    TOOL_SCHEMAS)
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- Allowlist = the Policy Layer's ALLOW tools: `add_column(table, column, column_type)`,
+  `rename_column(table, old_name, new_name)`, `backfill_column(table, column, value)`. The
+  REQUIRE_APPROVAL tools are not executable (the funnel stops before validation), so they are
+  not allowlisted here.
+- Every parameter is required; unknown parameters are rejected. Table ∈ `PIPELINE_TABLES`
+  (exact). Identifiers match `[A-Za-z_][A-Za-z0-9_]{0,62}` and may not start with `sqlite_`.
+  Identifiers may not be a rowid alias (`rowid`, `oid`, `_rowid_`, any case); parameter
+  names must be strings. `column_type` ∈ TEXT / INTEGER / REAL / NUMERIC. A backfill value is None, an int within
+  SQLite range (bool excluded), a finite float, or text of at most 1024 characters.
+- `ValidationResult(status, reason)` is a frozen dataclass; reason is None when VALID.
+- Not findings, carried to Task 2.4: the primitive must quote identifiers (reserved words
+  such as `SELECT` are valid identifiers here) and bind values as parameters.
+- Mapping to harness-owned implementations: each `TOOL_SCHEMAS` name is implemented by the
+  Task 2.4 pipeline-write primitive. Task 2.4 adds a test that the two tool sets are equal.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

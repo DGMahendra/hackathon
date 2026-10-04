@@ -94,8 +94,8 @@ recorded below are discrepancies or gaps, not conflicts.
 
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
-| 2.1 | Policy Layer | Completed | see S2.1 commit |
-| 2.2 | Tool Validation | | |
+| 2.1 | Policy Layer | Completed | 09739c6 |
+| 2.2 | Tool Validation | Completed | see S2.2 commit |
 | 2.3 | Deterministic Verification | | |
 | 2.4 | Execute Funnel Function | | |
 

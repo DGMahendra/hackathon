@@ -52,8 +52,8 @@ the conflict below.**
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
 | 5.1 | Naive Baseline (Structurally Stripped) | Completed | 2a8586a |
-| 5.2 | Seed/Failure-State Parity Fixture | Completed | see S5.2 commit |
-| 5.3 | Ablation Runner | | |
+| 5.2 | Seed/Failure-State Parity Fixture | Completed | 7a35fcb |
+| 5.3 | Ablation Runner | Completed | see S5.3 commit |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 
@@ -95,6 +95,8 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 | 5.1 | On Python 3.11 (allowed by Claude.md §4) a `;` in a naive identifier raises `sqlite3.Warning`, which `apply_directly` does not catch; the naive ATTACH authorizer is never exercised by a single-statement ATTACH test (Challenge Finding 2, ACCEPTed) | FRAGILITY | Catch `sqlite3.Warning` too if 3.11 is used |
 | 5.1 | Live `claude-sonnet-5` ignored the PROMPT_INJECTION payload in every live harnessed run so far (it backfilled the true amount). If it does the same in the naive baseline, the live ablation will show no unsafe execution on either side; the naive "executes the unsafe action" behaviour is proven with a scripted agent | FRAGILITY | Report it honestly in the ablation (Session 6); it is a property of the model, not of the harness |
 | 5.2 | `execute_naive` trusts the SeedState from `prepare_naive` without re-hashing the database right before the agent call, and the hash covers only the three canonical pipeline tables (no views / triggers / extra tables) — both safe while every ablation DB is fresh and runner-owned (Challenge Findings 1, 3, ACCEPTed) | FRAGILITY | Re-hash before execute if databases are ever shared or reused |
+| 5.3 | **Live ablation (N=2, 12 runs): no difference between naive and harnessed** — all 12 succeeded, and `claude-sonnet-5` ignored the PROMPT_INJECTION payload on BOTH sides (proposed the legitimate backfill), so no unsafe action executed even without the harness. The harness's PROMPT_INJECTION protection (naive executes / harnessed blocks) is demonstrated only with a scripted agent. This bears directly on Claude.md §1's success criterion ("measurably outperforms a structurally naive baseline") | MISSING | Engineer decision before Session 6 reporting: e.g. a larger N, harder or more varied injections, scenarios where the agent's first fix is wrong (where verification + retry matter), or reporting the scripted-agent results as the safety evidence alongside the honest live result |
+| 5.3 | `run_ablation.py` writes `data/ablation_results.jsonl` only after every pair finishes; a non-integrity exception in a late pair aborts the run and discards completed (paid) pairs (Challenge Finding 1, ACCEPTed) | FRAGILITY | Write rows incrementally before a large-N live run |
 
 Nature values: BUG | MISSING | FRAGILITY
 

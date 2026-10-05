@@ -87,20 +87,44 @@ def verify(scenario_run_id: int) -> VerificationResult:
     return VerificationResult(FAIL if details else PASS, tuple(details))
 
 
+def check_scenario_state(scenario_type: str, db_path) -> VerificationResult:
+    """Run scenario_type's checks against the pipeline in db_path (read-only), with no ScenarioRun.
+    Used by the ablation runner to score BOTH configurations on the same ground truth — the naive
+    baseline's own success claim is never evidence (INV-S5); it never writes the database."""
+    try:
+        conn = _connect_read_only(db_path)
+        try:
+            details = _checks_for(conn, scenario_type)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise VerificationError(f"cannot read database {db_path}: {exc}") from exc
+    return VerificationResult(FAIL if details else PASS, tuple(details))
+
+
 def _run_checks(scenario_run_id: int) -> list:
     """Return the failures of every check for the run (empty list = all passed)."""
-    conn = sqlite3.connect(Path(_db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    conn = _connect_read_only(_db_path)
     try:
-        scenario_type = _scenario_type(conn, scenario_run_id)
-        expectation = _expectations.get(scenario_type)
-        if expectation is None:
-            return [f"no verification expectation registered for {scenario_type}"]
-        columns = _table_columns(conn, expectation.table)
-        if not columns:
-            return [f"schema: table {expectation.table} does not exist"]
-        return _check_schema(expectation, columns) + _check_rows(conn, expectation, columns)
+        return _checks_for(conn, _scenario_type(conn, scenario_run_id))
     finally:
         conn.close()
+
+
+def _connect_read_only(db_path) -> sqlite3.Connection:
+    """The only way this module opens a database: read-only (it never writes)."""
+    return sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
+
+
+def _checks_for(conn, scenario_type: str) -> list:
+    """Return the failures of every check registered for scenario_type on conn's pipeline."""
+    expectation = _expectations.get(scenario_type)
+    if expectation is None:
+        return [f"no verification expectation registered for {scenario_type}"]
+    columns = _table_columns(conn, expectation.table)
+    if not columns:
+        return [f"schema: table {expectation.table} does not exist"]
+    return _check_schema(expectation, columns) + _check_rows(conn, expectation, columns)
 
 
 def _expectation_problem(scenario_type, expectation):

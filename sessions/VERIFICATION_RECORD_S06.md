@@ -308,6 +308,9 @@ Verification command: `python scripts/generate_ablation_report.py && test -f doc
   naive agent); class B: naive executed 3/3, harnessed 0/3 with 3 POLICY_DENY; §1: recovery Met
   (15/15), reliability Not met, safety Not met (live), repeated runs Met.
 
+- Run 3 (after the Challenge Finding 5 fix): exit 0; `tests/session6/` **27 passed**; the
+  regenerated report cites `data/ablation_results.jsonl` and `data/mechanism_demo_results.jsonl`.
+
 ### Challenge Agent Output
 Command: `./tools/challenge.sh S06 "Task 6.2"` (task files staged; exit 0). Full output, verbatim:
 
@@ -387,7 +390,7 @@ Files modified:     sessions/SESSION_LOG_S06.md, sessions/VERIFICATION_RECORD_S0
                     scripts/generate_ablation_report.py (new), docs/ABLATION_REPORT.md (new, generated),
                     tests/session6/test_generate_ablation_report.py (new)
                     (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
-Functions added:    scripts/generate_ablation_report.py — config_stats, all_stats, _comparison_table,
+Functions added:    scripts/generate_ablation_report.py — repo_path, config_stats, all_stats, _comparison_table,
                     differences, _live_findings, _mechanism_section, _section_1_assessment, render, main
 Functions modified: NONE
 Functions deleted:  NONE

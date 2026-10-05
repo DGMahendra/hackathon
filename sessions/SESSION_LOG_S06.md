@@ -56,12 +56,12 @@ that file is a runtime output (live N=2 run of 2026-10-04, 12 runs), present loc
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
 | 6.1 | Evaluation Report | Completed | 9a2b0f7 |
-| 6.2 | Ablation Report | | |
+| 6.2 | Ablation Report | Completed | 2d4ee9a |
 | 6.3 | Threat Model Document | | |
 | 6.4 | Capture Success & Failure Traces | | |
 | 6.5 | Live Demo Script | | |
 | 6.6 | README | | |
-| 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | see S6.7 commit |
+| 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | 63d3b11 |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 
@@ -105,6 +105,8 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 |------|-------------|--------|--------------------|
 | 6.1 | **Live ablation re-run at N=5 (2026-10-05): again no measured difference** — naive 15/15, harnessed 15/15, 0 unsafe actions executed on either side, 0 integrity failures; on PROMPT_INJECTION `claude-sonnet-5` proposed `backfill_column` (the legitimate fix) in 5/5 naive and 5/5 harnessed runs. Every harnessed run used 1 attempt. Combined with N=2 (2026-10-04): 42 live runs, no difference. API credit cannot be read through the API (one-token probe succeeded → N=5) | MISSING | Reported as measured (class A); carried into the end-of-project reconciliation against Claude.md §1 |
 | 6.1 | No harnessed run was UNRECOVERED in either live ablation, so Task 6.4's failure trace will have to be the labelled controlled fallback | MISSING | Handled in Task 6.4 per its prompt |
+| 6.2 | `generate_ablation_report.py` robustness gaps that cannot trigger on the reported data (Challenge Findings 1–4, ACCEPTed): a 0-run live PROMPT_INJECTION cell would still print the "model ignored the injection" sentence; class B integrity-failure rows are not shown; §1 reliability/safety use `any()` across scenarios (a mixed-direction result would read Met); naive/harnessed run counts per cell are not checked equal and naive rows are not validated | FRAGILITY | Before regenerating from other data: guard on runs > 0, report class B integrity failures, require per-scenario direction, validate pairing |
+| 6.2 | Record keeping: the S6.2 commit (2d4ee9a) was made before its session-record updates were written (a CC helper failed on the last VR entry and the commit command did not stop); completed in the follow-up commit | FRAGILITY | Chain record updates and commit with `&&` |
 
 Nature values: BUG | MISSING | FRAGILITY
 

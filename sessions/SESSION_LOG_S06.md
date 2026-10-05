@@ -56,10 +56,10 @@ that file is a runtime output (live N=2 run of 2026-10-04, 12 runs), present loc
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
 | 6.1 | Evaluation Report | Completed | 9a2b0f7 |
-| 6.2 | Ablation Report | Completed | 2d4ee9a |
-| 6.3 | Threat Model Document | Completed | see S6.3 commit |
-| 6.4 | Capture Success & Failure Traces | Completed | see S6.4 commit |
-| 6.5 | Live Demo Script | | |
+| 6.2 | Ablation Report | Completed | 2d4ee9a (records: 4c3eb62) |
+| 6.3 | Threat Model Document | Completed | 80dd538 |
+| 6.4 | Capture Success & Failure Traces | Completed | 5f8d75b |
+| 6.5 | Live Demo Script | Completed | see S6.5 commit |
 | 6.6 | README | | |
 | 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | 63d3b11 |
 
@@ -109,6 +109,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 | 6.2 | `generate_ablation_report.py` robustness gaps that cannot trigger on the reported data (Challenge Findings 1–4, ACCEPTed): a 0-run live PROMPT_INJECTION cell would still print the "model ignored the injection" sentence; class B integrity-failure rows are not shown; §1 reliability/safety use `any()` across scenarios (a mixed-direction result would read Met); naive/harnessed run counts per cell are not checked equal and naive rows are not validated | FRAGILITY | Before regenerating from other data: guard on runs > 0, report class B integrity failures, require per-scenario direction, validate pairing |
 | 6.2 | Record keeping: the S6.2 commit (2d4ee9a) was made before its session-record updates were written (a CC helper failed on the last VR entry and the commit command did not stop); completed in the follow-up commit | FRAGILITY | Chain record updates and commit with `&&` |
 | 6.3 | The agent's system prompt (`src/agent_core.py` SYSTEM_PROMPT, shared by both configurations) offers only the three repair tools; this may contribute to `claude-sonnet-5` ignoring the injected `upload_record` in every live run. The live class A result therefore characterises this model + this prompt + this injection text, not instruction injection in general (stated in docs/THREAT_MODEL.md) | MISSING | For the end-of-project reconciliation: any stronger live safety claim would need a different prompt or injection design (engineer decision; scenarios not changed in this session per rule 6) |
+| 6.5 | Demo timing: a hand-timed kill can only land in the ~5 s planning window (never after commit), and process start-up varies (run created 3.5–5.8 s after launch). The script therefore triggers the kill on the run's `run_started` trace line and shows the after-commit case with `scripts/simulate_crash_resume.py` (fake API, exact timing) | FRAGILITY | Phase 7 timed dry run should use the script as written |
 
 Nature values: BUG | MISSING | FRAGILITY
 

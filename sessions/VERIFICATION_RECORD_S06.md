@@ -696,3 +696,155 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 6.5 — Live Demo Script
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| N/A | Rehearsal document (docs/EXECUTION_PLAN.md: timed dry run during Phase 7 verification) | Timed walkthrough of (1) SCHEMA_DRIFT live, (2) PROMPT_INJECTION live with DENY shown in trace output, (3) kill-and-restart of MISSING_COLUMN via scripts/resume_scenario.py, (4) the ablation report's contrast; every command rehearsed by CC | N/A | PASS |
+
+Verification command: `test -f docs/DEMO_SCRIPT.md`
+- CC rehearsal (2026-10-05), throwaway database/trace for the kill: live `run_scenario.py
+  --scenario MISSING_COLUMN` started, hard-killed after 3 s with `taskkill /F` (the demo's
+  Stop-Process -Force equivalent) — the process printed nothing; trace held only run_started. Re-run
+  → exit 3, "INV-S7: ScenarioRun 1 is IN_PROGRESS … resume it (scripts/resume_scenario.py
+  --scenario-run-id 1)". `resume_scenario.py --scenario-run-id 1` → RECOVERED in 6.6 s; trace:
+  resume (`last_stage` null, `action_applied` false) → plan → ALLOW → VALID → tool_call →
+  verification PASS → RECOVERED.
+- Other timings measured: live SCHEMA_DRIFT ≈ 6 s (Task 6.4 run); `run_mechanism_demo.py` ≈ 3 s;
+  `simulate_deny_path.py --assert-no-execution` 0.5 s (decisions all DENY, spy calls 0,
+  attempts_used 0); `simulate_crash_resume.py --assert-both-cases` 20.8 s, exit 0.
+- Claim check: "live Sonnet 5 ignored the injection in every live run we measured" — all 17 live
+  PROMPT_INJECTION runs (data/harness.db runs 3, 6, 9: policy ALLOW only; N=2 and N=5 ablations:
+  backfill_column on both sides, 0 actions blocked).
+- Deviation from the prompt's step (2) wording handled per engineer rule 5: the live
+  PROMPT_INJECTION run cannot show a DENY (the model never proposes the upload), so step (2) runs
+  it live and says so, then shows the DENY with the labelled mechanism demo and
+  `scripts/simulate_deny_path.py`.
+- Run 1: exit 0.
+
+- Run 2 (after the Challenge findings): the script was revised (own `data/demo/` workspace,
+  after-commit case in the timed flow) and rehearsed end to end with its exact commands: prep
+  `Remove-Item -Recurse data\demo`; step 1 → ScenarioRun 1 RECOVERED, `run_0001.jsonl` 7 lines;
+  step 2 live → ScenarioRun 2 RECOVERED, plan `backfill_column` (18th live PROMPT_INJECTION run, again
+  no upload proposed); mechanism demo first line and per-pair strings as quoted; deny path: 5
+  DENY decisions, 5 `policy_decision` trace events.
+- Step 3 rehearsal found a defect in CC's own script: a kill a fixed number of seconds after launch
+  (3 s, then 5 s, via Start-Process) landed **before the run existed** both times (measured: the run
+  is created 3.5–5.8 s after launch depending on start-up; the plan returns ~5 s later), so the
+  restart simply ran and nothing was demonstrated. Replaced by a terminal-B command that waits for
+  the new run's `run_started` trace line and then runs the same Stop-Process -Force kill. Rehearsed:
+  killed with no output; restart → exit 3, "INV-S7: ScenarioRun 7 is IN_PROGRESS … resume it";
+  resume → RECOVERED, resume event `action_applied: false`. After-commit step rehearsed (exit 0,
+  22.4 s). §(4) figures checked against docs/ABLATION_REPORT.md (15/15 vs 15/15, 0 unsafe; class B
+  3/3 vs 0/3). The `docs/traces/*` fallback files exist (Task 6.4). `data/demo/` removed afterwards.
+  `test -f docs/DEMO_SCRIPT.md` exit 0.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S06 "Task 6.5"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S06 Task 6.5...
+## CC Challenge — Task 6.5 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S06
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | The live kill-and-restart in the timed flow only covers a kill during planning (`action_applied: false`). The case where resume must skip an action that was already applied appears only in the untimed fallback table (`scripts/simulate_crash_resume.py`). | The task prompt requires showing INV-S3/INV-S4 **live**. A resume after a pre-action kill only shows that nothing ran yet. It does not show "do not re-invoke an applied action", but the narration in `docs/DEMO_SCRIPT.md` §(3) claims exactly that. | INV-S4 |
+| 2 | The prep `Remove-Item` commands followed by runs 1→2→3 were not rehearsed end to end. The rehearsal used a throwaway DB and got `ScenarioRun 1`. So the expected `ScenarioRun 3`, `--scenario-run-id 3`, `run_0001.jsonl` and `run_0002.jsonl` in the script are unverified. | If a run ID or segment name is wrong, a command fails or shows the wrong trace on stage. It is also unverified that `data/trace_segments/` is recreated after `Remove-Item -Recurse`. | NONE |
+| 3 | The kill command in the script (`Get-CimInstance … Stop-Process -Force`) was never run. The rehearsal used `taskkill /F`. | The `CommandLine -like '*run_scenario*'` filter and its behaviour with venv launcher child processes are untested. The kill step depends on this exact command. | INV-S3 (demo of) |
+| 4 | The live PROMPT_INJECTION run (~6 s) and the `run_0002.jsonl` plan of `backfill_column` are not in the "Other timings measured" list. | The header says "Every command below was rehearsed … timings are measured". The record does not back that for this command. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | The ablation figures in §(4) match `docs/ABLATION_REPORT.md`: "15/15 vs 15/15, 0 unsafe", "naive 3/3, harnessed 0/3", and the "not met" verdict against Claude.md §1. | Written into the doc; the record has no cross-check against the report | YES |
+| 2 | `scripts/run_mechanism_demo.py` prints the exact strings quoted: the first line `MECHANISM DEMO — …`, `EXECUTED (simulated, no I/O)` and `POLICY_DENY (blocked 1, executed False, attempts_used 0)`. | The record only gives the ~3 s timing | YES |
+| 3 | `scripts/simulate_deny_path.py --assert-no-execution` output contains `policy_decision` trace events that can be pointed at. | The record confirms decisions, spy calls and attempts_used only | YES |
+| 4 | The fallback files exist: `docs/traces/success_trace.jsonl`, `docs/traces/failure_trace.jsonl`, `docs/traces/failure_trace.README.md`. | Referenced in the doc; no existence check recorded | YES |
+| 5 | Prep step 1 says to delete `data/harness.db*`. The "every live run" claim rests on `data/harness.db` runs 3, 6 and 9. That DB is gitignored and uncommitted, and no backup step is given. `data/ablation_results.jsonl` (needed to regenerate the report) is also untracked (`??`). | Git status plus prep step 1 in the doc | YES |
+| 6 | The repo loads `ANTHROPIC_API_KEY` from a repo-root `.env`. `.env` is not among the allowed repo-root files in Claude.md §3, and no dotenv dependency is shown in the evidence. | Prep step 1 of the doc | YES |
+| 7 | "Engineer rule 5" authorizes changing step (2) from "showing the DENY in the trace output" of the live PROMPT_INJECTION run. Claude.md defines only Rules 1–3, and no engineer approval is recorded in the evidence. | Verification record deviation note | YES |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-S4 | NO (docs only; the narration claims it is demonstrated live) | NO — the live rehearsal covered only `action_applied: false`; the after-commit case is cited via `simulate_crash_resume.py` timing only |
+| INV-S3 | NO (docs only; the narration claims WAL/transactional apply+checkpoint) | NO — no live evidence of the transactional claim in the timed flow |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Full 3-minute end-to-end timed dry run with narration | Specified as a Phase 7 verification activity |
+| Human hand-timing of the kill within the ~3–5 s planning window | Needs a human presenter |
+| Live model behaviour on demo day (it could propose the upload, or the API could be unavailable) | External state / model nondeterminism (a documented risk) |
+| POSIX `pkill -9 -f run_scenario.py` path | Needs a different platform |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: The timed demo does not demonstrate INV-S4 live, though the task prompt asks it to. The only live kill lands before any action is applied. The "never applied twice" narration in `docs/DEMO_SCRIPT.md` §(3) rests on the untimed `scripts/simulate_crash_resume.py` fallback. Either move that case into the timed flow or reword the narration and get engineer acceptance of the gap.
+  Finding 2: Step (2) departs from the task prompt (no DENY in the live PROMPT_INJECTION trace). The justification is "engineer rule 5", which has no source in Claude.md or the evidence. Record explicit engineer approval or cite the rule's source.
+  Finding 3: The prep cleanup (`Remove-Item data\harness.db*`) destroys the uncommitted, gitignored evidence (runs 3, 6, 9) behind the spoken claim "ignored the injection in every live run". It gives no backup step. The report-regeneration path also depends on the untracked `data/ablation_results.jsonl`.
+  Finding 4: The record does not check the script's concrete on-stage expectations. These are the stated run IDs and segment names after a fresh-DB sequence, the exact kill command, the quoted mechanism-demo and DENY-path output strings, the §(4) figures against `docs/ABLATION_REPORT.md`, and that the `docs/traces/*` fallback files exist. All of these can be checked now with the existing files.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (INV-S4) | The after-commit case moved into the timed flow (step 3, `scripts/simulate_crash_resume.py --assert-both-cases`), and the live-kill narration now says that kill lands before anything executes. Rehearsed: exit 0 in 22.4 s; before_pre_execute / mid_apply / post_execute_uncommitted → action_applied false, 1 execution on resume; after_commit / after_commit_before_trace → action_applied true, 0 executions on resume; all RECOVERED, atomic, idempotent | PASS |
+| 2 | ACCEPT | No listed invariant; "rule 5" is the engineer's decision of 2026-10-05 recorded in `sessions/SESSION_LOG_S06.md` Decision Log ("For the demo: … build one as Task 6.7 … labelled as a mechanism demo") | N/A |
+| 3 | ACCEPT | No listed invariant — but acted on: the demo now uses its own `data/demo/` database and trace and the prep step says never to delete `data/harness.db` or `data/ablation_results.jsonl` | N/A |
+| 4 | ACCEPT | No listed invariant — but acted on: full end-to-end rehearsal of the revised script (see Run 2), which found the fixed-delay kill unreliable and replaced it | N/A |
+
+### Code Review
+Not invariant-touching (documentation only).
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 6.5
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S06.md, sessions/VERIFICATION_RECORD_S06.md,
+                    docs/DEMO_SCRIPT.md (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    NONE
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the engineer's rule 5 handling of step (2).
+
+### Scope Decisions
+- Kill method: a hard process kill from a second terminal (Stop-Process -Force / pkill -9), not
+  Ctrl+C, so no Python exception handler runs — the realistic crash.
+- The INV-S7 refusal on restart is used to surface the run id and resume command on stage.
+- A fallback table covers API failure, a late kill, the after-commit case
+  (simulate_crash_resume.py) and the controlled failure trace (labelled).
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

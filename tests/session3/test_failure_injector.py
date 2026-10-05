@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import failure_injector as fi
+import scenario_expectations
 import harness
 import state_manager as sm
 import verification
@@ -39,7 +40,7 @@ def db_path(tmp_path):
     path = _new_db(tmp_path / "main")
     harness.init(path, tmp_path / "trace.jsonl")
     fi.init(path)
-    fi.register_expectations()
+    scenario_expectations.register_expectations()
     return path
 
 
@@ -216,7 +217,7 @@ def test_failed_injection_rolls_back(db_path, monkeypatch):
 
 def test_every_scenario_has_a_registered_expectation():
     verification._expectations.clear()
-    fi.register_expectations()
+    scenario_expectations.register_expectations()
     assert set(verification._expectations) == set(fi.SCENARIO_TYPES) == set(verification.SCENARIO_TYPES)
 
 
@@ -260,10 +261,10 @@ def test_missing_column_only_exempts_region(db_path, column):
 
 
 def test_expectations_never_loosen_the_whole_table():
-    for scenario_type, expectation in fi.EXPECTATIONS.items():
+    for scenario_type, expectation in scenario_expectations.EXPECTATIONS.items():
         assert expectation.max_null_rate == 0.0, scenario_type
-    assert fi.EXPECTATIONS["MISSING_COLUMN"].nullable == ("region",)
-    assert fi.EXPECTATIONS["SCHEMA_DRIFT"].nullable == fi.EXPECTATIONS["PROMPT_INJECTION"].nullable == ()
+    assert scenario_expectations.EXPECTATIONS["MISSING_COLUMN"].nullable == ("region",)
+    assert scenario_expectations.EXPECTATIONS["SCHEMA_DRIFT"].nullable == scenario_expectations.EXPECTATIONS["PROMPT_INJECTION"].nullable == ()
 
 
 @pytest.mark.parametrize("nullable", [("missing_column",), ("region", "nope")])

@@ -2,7 +2,8 @@
 
 run_scenario(scenario_type, seed):
   (1) creates the ScenarioRun (checkpointed run_started),
-  (2) injects the failure (failure_injector.inject),
+  (2) injects the failure through ablation_fixture.get_seed_state — the single source of seeded
+      state shared with the naive baseline (INV-D6),
   (3) loops: the agent proposes a plan (agent_core.diagnose_and_plan), the proposal goes through
       harness.attempt_action — never around it (INV-S1: no reference here to the pipeline-write
       primitive or execute_and_checkpoint) — until the run is recovered or must stop,
@@ -39,9 +40,11 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+import ablation_fixture
 import agent_core
 import failure_injector
 import harness
+import scenario_expectations  # noqa: F401 — registers Verification's expectations in every harnessed process
 import state_manager
 import trace_logger
 
@@ -63,6 +66,7 @@ class ScenarioResult:
     reason: str  # "<CODE>: <detail>"
     plan: object = None  # the last agent_core.Plan, if any
     outcome: object = None  # the last harness.AttemptOutcome, if any
+    initial_state_hash: str = None  # SHA-256 of the pipeline right after injection (INV-D6)
 
     @property
     def reason_code(self) -> str:
@@ -88,16 +92,21 @@ def init(db_path, trace_path) -> None:
     agent_core.init(db_path)
 
 
-def run_scenario(scenario_type: str, seed: int, client=None) -> ScenarioResult:
-    """Inject scenario_type's failure, then plan and attempt fixes until recovered or stopped."""
+def run_scenario(scenario_type: str, seed: int, client=None, parity_with=None) -> ScenarioResult:
+    """Inject scenario_type's failure, then plan and attempt fixes until recovered or stopped.
+    With parity_with (the naive side's SeedState), the initial states are compared before the agent
+    is asked for anything; a mismatch raises ablation_fixture.AblationIntegrityError (INV-D6)."""
     run_id = state_manager.start_run(scenario_type, exclusive=True)  # INV-S7: RunInProgressError if one is live
     try:
-        injection = failure_injector.inject(scenario_type, seed)
+        seed_state = ablation_fixture.get_seed_state(scenario_type, seed)  # the single source (INV-D6)
+        if parity_with is not None:
+            ablation_fixture.require_parity(parity_with, seed_state)
         state_manager.checkpoint(run_id, "run_started", {})
         trace_logger.emit(run_id, None, "state_transition",
                           {"stage": "run_started", "scenario_type": scenario_type, "seed": seed,
-                           "injected": injection.description})
-        return _finish(run_id, scenario_type, seed, _recovery_loop(run_id, client))
+                           "injected": seed_state.description, "initial_state_hash": seed_state.state_hash})
+        result = _finish(run_id, scenario_type, seed, _recovery_loop(run_id, client))
+        return ScenarioResult(**{**result.__dict__, "initial_state_hash": seed_state.state_hash})
     except Exception as exc:
         _abandon(run_id, exc)
         raise

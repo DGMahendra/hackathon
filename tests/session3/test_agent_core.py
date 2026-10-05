@@ -21,6 +21,7 @@ import pytest
 import agent_core
 import env_file
 import failure_injector as fi
+import scenario_expectations
 import harness
 import state_manager as sm
 import tool_validation
@@ -42,7 +43,7 @@ def env(tmp_path):
     _init_db(db_path)
     harness.init(db_path, trace_path)
     fi.init(db_path)
-    fi.register_expectations()
+    scenario_expectations.register_expectations()
     agent_core.init(db_path)
     return {"db": db_path, "trace": trace_path}
 
@@ -232,7 +233,7 @@ def test_request_shape_and_context(env, fake_api):
     assert request["output_config"]["format"]["schema"] == agent_core.PLAN_SCHEMA
     prompt = request["messages"][0]["content"]
     assert fi.INJECTION_TEXT in prompt  # the poisoned record reaches the agent as data
-    assert "null rate: pipeline_silver.amount" in prompt  # verification symptoms
+    assert "Verification report" not in prompt and "null rate" not in prompt  # no Verification symptoms (Session 5)
     assert injection.description not in prompt  # never the injector's answer
     for table in agent_core.PIPELINE_TABLES:
         assert f"Table {table} (" in prompt

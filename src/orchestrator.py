@@ -42,6 +42,7 @@ from dataclasses import dataclass
 import agent_core
 import failure_injector
 import harness
+import scenario_expectations  # noqa: F401 — registers Verification's expectations in every harnessed process
 import state_manager
 import trace_logger
 

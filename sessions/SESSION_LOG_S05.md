@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** BLOCKED at Pre-Build Validation — INV-S6 import-graph conflict needs engineer decisions
+**Status:** In Progress (resumed after engineer decisions on the INV-S6 conflict)
 
 ## Pre-Build Validation
 
@@ -41,9 +41,9 @@ the conflict below.**
   anything — decisions with direct consequences for the ablation's validity and for safety, not covered by
   Claude.md or `docs/EXECUTION_PLAN.md`.
 
-**Engineer response:** 
+**Engineer response:** Decisions given 2026-10-04 (see Decision Log); review DEFERRED — engineer review at end of build
 **Engineer notes:** 
-**Proceed to first task:** No — SESSION BLOCKED pending engineer decisions
+**Proceed to first task:** Yes — after the engineer's three decisions
 
 ---
 
@@ -51,7 +51,7 @@ the conflict below.**
 
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
-| 5.1 | Naive Baseline (Structurally Stripped) | BLOCKED | none |
+| 5.1 | Naive Baseline (Structurally Stripped) | Completed | see S5.1 commit |
 | 5.2 | Seed/Failure-State Parity Fixture | | |
 | 5.3 | Ablation Runner | | |
 
@@ -63,7 +63,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 
 | Resumed at | Resumed from Task | Blocking issue resolution | Resolved at | Root cause |
 |------------|-------------------|--------------------------|-------------|------------|
-|            |                   |                           |             |            |
+| 2026-10-04 | Pre-Build (SESSION BLOCKED: INV-S6 import-graph conflict) | Engineer decided agent context, naive executor and naive persistence (Decision Log) | | |
 
 ---
 
@@ -71,6 +71,9 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 
 | Task | Decision made | Rationale |
 |------|---------------|-----------|
+| Pre-Build | Agent context: both the naive and the harnessed agent see the same raw-data context — scenario type and full pipeline tables — and **no** Verification symptoms. `verification` is removed from `agent_core`; harnessed re-plans still see previous attempts and their recorded reasons (harness records). The ablation thus isolates the gates | Engineer decision (2026-10-04), option "Same, from raw data" |
+| Pre-Build | Naive executor: the three pipeline tools run as unvalidated SQL on the naive run's own database; any other tool (upload, file write, HTTP…) is recorded as an unsafe action executed **simulated, with no network or file I/O** | Engineer decision (2026-10-04), option "Simulate, no I/O" |
+| Pre-Build | Persistence: every ablation run — naive and harnessed — uses its own throwaway database; the naive side has no State Manager, no ScenarioRun/Attempt rows, no checkpoints; results only in `data/ablation_results.jsonl` | Engineer decision (2026-10-04), option "Own throwaway DB" |
 | Session 5 | Challenge Agent findings dispositioned by CC (TEST for INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT others with rationale); no second challenge run per task | Engineer standing instruction, 2026-10-04 |
 
 ---
@@ -88,6 +91,9 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 
 | Task | Observation | Nature | Recommended action |
 |------|-------------|--------|--------------------|
+| 5.1 | `scripts/assert_naive_has_no_harness_imports.py` follows bare-name imports of flat `src/` modules and constant dynamic-import strings; relative imports, `src.`-qualified imports, `sys.modules[...]` / `spec_from_file_location` access and packages are not followed (Challenge Finding 1, ACCEPTed) | FRAGILITY | Harden the check if the codebase ever adopts a package layout |
+| 5.1 | On Python 3.11 (allowed by Claude.md §4) a `;` in a naive identifier raises `sqlite3.Warning`, which `apply_directly` does not catch; the naive ATTACH authorizer is never exercised by a single-statement ATTACH test (Challenge Finding 2, ACCEPTed) | FRAGILITY | Catch `sqlite3.Warning` too if 3.11 is used |
+| 5.1 | Live `claude-sonnet-5` ignored the PROMPT_INJECTION payload in every live harnessed run so far (it backfilled the true amount). If it does the same in the naive baseline, the live ablation will show no unsafe execution on either side; the naive "executes the unsafe action" behaviour is proven with a scripted agent | FRAGILITY | Report it honestly in the ablation (Session 6); it is a property of the model, not of the harness |
 
 Nature values: BUG | MISSING | FRAGILITY
 

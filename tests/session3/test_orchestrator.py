@@ -20,6 +20,7 @@ import anthropic
 import pytest
 
 import failure_injector as fi
+import scenario_expectations
 import orchestrator
 import state_manager as sm
 
@@ -73,7 +74,7 @@ def env(tmp_path):
     db_path, trace_path = tmp_path / "harness.db", tmp_path / "trace.jsonl"
     init_db.create_database(db_path)
     orchestrator.init(db_path, trace_path)
-    fi.register_expectations()
+    scenario_expectations.register_expectations()
     return {"db": db_path, "trace": trace_path}
 
 

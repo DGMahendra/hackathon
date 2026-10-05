@@ -10,6 +10,7 @@ import anthropic
 import pytest
 
 import failure_injector as fi
+import scenario_expectations
 import orchestrator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +46,7 @@ def env(tmp_path, monkeypatch):
     db_path, trace_path = tmp_path / "harness.db", tmp_path / "trace.jsonl"
     init_database(db_path)
     orchestrator.init(db_path, trace_path)
-    fi.register_expectations()
+    scenario_expectations.register_expectations()
     monkeypatch.setattr(orchestrator, "_sleep", lambda seconds: None)
     return {"db": db_path, "trace": trace_path, "tmp": tmp_path}
 

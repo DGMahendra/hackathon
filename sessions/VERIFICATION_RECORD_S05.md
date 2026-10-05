@@ -180,3 +180,152 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 5.2 — Seed/Failure-State Parity Fixture
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Naive and harnessed runs with the same seed | Initial-state hashes match exactly | N/A | PASS |
+| TC-2 | Deliberately mismatched seed | Raises `AblationIntegrityError` — not a silent pass, not dependent on assertions being enabled | N/A | PASS |
+
+Verification command: `python -m pytest tests/session5/test_ablation_fixture.py -v`
+- Run 1: **17 passed** (exit 0). Whole suite without the live tests: 992 passed. The INV-S6 check
+  still passes, with `ablation_fixture` now in the naive graph.
+Beyond TC-1 and TC-2, the tests cover:
+- the hash is reproducible and seed-sensitive, covers schema and rows, and differs per scenario;
+- the mismatch is caught before the agent is asked (0 client calls), and the harnessed run is
+  closed UNRECOVERED, not left IN_PROGRESS;
+- `require_parity` checks seed, scenario type and hash, symmetrically;
+- the mismatch still raises under `python -O`, and the fixture contains no `assert`;
+- AST: `orchestrator` and `naive_baseline` both seed only via `get_seed_state`, never `inject`;
+- the naive result and the `run_started` trace event carry the hash.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S05 "Task 5.2"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S05 Task 5.2...
+## CC Challenge — Task 5.2 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S05
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | `execute_naive(seed_state, db_path)` gets a `seed_state` that doesn't belong to `db_path` (another DB, or the DB was changed after `prepare_naive`). Nothing re-hashes `db_path` before the naive agent runs. | The parity check can pass on one hash while the naive run uses different data. Nothing ties the checked hash to the database that actually gets used. | INV-D6 |
+| 2 | Parity mismatch inside `run_scenario`: the test checks only `status == "UNRECOVERED"`. It doesn't check that the `run_complete` trace or the reason identifies `AblationIntegrityError`; `_abandon` writes the generic `"reason": "HARNESS_ERROR"`, with the error only in `detail: repr(exc)`. | INV-D6 says a mismatch must be recorded as an explicit integrity failure and never folded into a normal failure result. The harness-side record currently looks like any other harness error. | INV-D6 |
+| 3 | The hash ignores anything outside `CANONICAL_TABLES`. `pipeline_state()` loops over a fixed table list and reads only `type='table'` DDL. Extra tables, views, triggers and indexes in the DB are never hashed. `test_hash_covers_schema_and_rows` only tests a row update and a column added to an existing table. | If one side has a leftover view or trigger and the other doesn't, the hashes still match. The pre-existing harness DB is the side most exposed. | INV-D6 |
+| 4 | The "no second injection path" AST test only finds attribute calls named `inject`. A bare-name call (`from failure_injector import inject; inject(...)`) passes the test. So do other `failure_injector` helpers that change state. `orchestrator.py` still imports `failure_injector`. | The structural guarantee of exactly one source of seeded state can be bypassed without the test noticing. | INV-D6 |
+| 5 | The `python -O` test calls `require_parity` directly. It doesn't run the `run_scenario(..., parity_with=...)` path under `-O`. | It doesn't show that the integrity check survives optimized mode in the path the harness actually uses. | INV-D6 |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | The caller always passes the same `db_path` to `prepare_naive` and `execute_naive`. | The two values are separate parameters and nothing checks they match. | YES |
+| 2 | All injected failure state is inside the `CANONICAL_TABLES` rows and table DDL. | `pipeline_state()` uses a fixed table list and `type='table'` DDL only. | YES |
+| 3 | The harnessed side's `get_seed_state(scenario_type, seed)` with no `db_path`, and `state_hash(None)`, both resolve to the DB set by `orchestrator.init`. | They rely on `failure_injector._db_path`. TC-1 covers this only indirectly. | YES (indirectly covered) |
+| 4 | `description` doesn't need comparing, because it follows from `(scenario_type, seed)`. | `require_parity` leaves `description` out of its key. | YES |
+| 5 | Leaving the throwaway harness ScenarioRun (UNRECOVERED) behind is safe, because the Task 5.3 runner will exclude it from results. | The record calls it a "throwaway harness run". | NO (Task 5.3) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-D6 (the hash actually covers the DB the naive agent runs on) | YES | NO |
+| INV-D6 (a mismatch is recorded as an explicit integrity failure, not as a generic HARNESS_ERROR) | YES | NO (only the status is checked) |
+| INV-D6 (hash completeness beyond the canonical tables: views, triggers, extra tables) | YES | NO |
+| INV-D6 (single seeding source: bare-name or other injector call paths) | YES | PARTIAL |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| `parity_with` is optional, so a harnessed ablation run can skip the comparison entirely. The ablation path must always supply it. | The runner that enforces this is Task 5.3. |
+| A pair aborted on mismatch is excluded from results, other pairs carry on, and the report shows an integrity failure. | Ablation runner and report are Task 5.3. |
+| Parity on the resume path (`resume_run` / `scripts/resume_scenario.py`) during an ablation pair. | Belongs to the ablation runner and live demo (Task 5.3, Session 6). |
+| Real Anthropic API runs with the hash compared. | Needs external state (a live API key). |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: `execute_naive` trusts `seed_state.state_hash` without re-hashing `db_path` right before the agent call. Add a check (raising `AblationIntegrityError` when `state_hash(db_path)` ≠ `seed_state.state_hash`) and a test that passes a mismatched `seed_state`/`db_path` pair, or a DB changed after prepare.
+  Finding 2: `test_mismatched_seed_raises_before_the_agent_is_asked` checks only `status == UNRECOVERED`. Nothing checks that the harness-side record (trace `run_complete` reason/detail) identifies an ablation integrity failure rather than a generic `HARNESS_ERROR`.
+  Finding 3: Nothing tests that the hash detects extra non-canonical tables, views or triggers. `pipeline_state()` doesn't cover them, so parity can pass while the two DBs differ.
+  Finding 4: `test_both_configurations_seed_only_through_the_fixture` only catches `<x>.inject(...)` attribute calls. A bare-name `inject(...)` call or another `failure_injector` state-changing helper would get past it.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | INV-D6 is not on the TEST list. The runner (Task 5.3) owns each pair's throwaway naive DB end to end — prepare and execute use the same path, and nothing else touches it in between; logged as an observation (re-hash before execute would harden it) | N/A |
+| 2 | ACCEPT | INV-D6 is not on the TEST list. The pair-level record of an integrity failure is the runner's `ablation_integrity_failure` entry (Task 5.3, which the prompt assigns this to); the throwaway harness run's HARNESS_ERROR detail carries the `AblationIntegrityError` repr | N/A |
+| 3 | ACCEPT | INV-D6 is not on the TEST list. Every ablation DB is freshly created per run (engineer decision) and injection drops and recreates the three canonical tables, so no stray views, triggers or tables exist to differ; logged as an observation | N/A |
+| 4 | ACCEPT | INV-D6 is not on the TEST list. The codebase calls sibling modules by module attribute throughout; the AST test pins that convention for both configurations | N/A |
+
+### Code Review
+Invariant text is embedded in the Task 5.2 CC prompt in `docs/EXECUTION_PLAN.md`.
+Items to review (results left blank):
+- INV-D6: `ablation_fixture.get_seed_state()` is the single source of seeded/injected state for
+  BOTH `src/orchestrator.py` and `src/naive_baseline.py` (neither injects any other way).
+- The pre-run comparison hashes the initial PipelineState of both configurations and compares
+  them before any agent call; a mismatch raises `AblationIntegrityError` explicitly — no
+  `assert`, so it survives `python -O`.
+- The fixture keeps the naive import graph free of policy_layer / tool_validation / verification.
+- CQ-001: single stateable purpose per function; conditional nesting ≤ 2 levels.
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 5.2
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S05.md, sessions/VERIFICATION_RECORD_S05.md,
+                    src/ablation_fixture.py (new), src/naive_baseline.py, src/orchestrator.py,
+                    tests/session5/test_ablation_fixture.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    src/ablation_fixture.py — get_seed_state, state_hash, require_parity
+                    (+ SeedState, AblationIntegrityError); src/naive_baseline.py — prepare_naive,
+                    execute_naive, _plan_and_apply
+Functions modified: src/naive_baseline.py — run_naive (prepare + execute; result carries the
+                    hash); src/orchestrator.py — run_scenario (seeds via the fixture; optional
+                    `parity_with`; result and run_started trace carry the hash)
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- `get_seed_state(scenario_type, seed, db_path=None)` → `SeedState(scenario_type, seed,
+  state_hash, description)`. The hash is the SHA-256 of `failure_injector.pipeline_state()` (the
+  schema and rows of every pipeline table) right after injection.
+- Pre-run comparison: the runner prepares the naive side first (`prepare_naive`), then starts the
+  harnessed run with `parity_with=<naive SeedState>`. The orchestrator compares right after its
+  own injection and before any planning, so neither agent is asked anything if the states differ.
+  Only then does the naive side execute (`execute_naive`).
+- `AblationIntegrityError` is raised explicitly (no `assert`). Inside the orchestrator it
+  becomes a HARNESS_ERROR completion of the throwaway harness run, then is re-raised for the
+  runner to handle at pair level (Task 5.3).
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

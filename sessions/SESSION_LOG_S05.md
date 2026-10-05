@@ -51,8 +51,8 @@ the conflict below.**
 
 | Task Id | Task Name | Status | Commit |
 |---------|-----------|--------|--------|
-| 5.1 | Naive Baseline (Structurally Stripped) | Completed | see S5.1 commit |
-| 5.2 | Seed/Failure-State Parity Fixture | | |
+| 5.1 | Naive Baseline (Structurally Stripped) | Completed | 2a8586a |
+| 5.2 | Seed/Failure-State Parity Fixture | Completed | see S5.2 commit |
 | 5.3 | Ablation Runner | | |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
@@ -94,6 +94,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 | 5.1 | `scripts/assert_naive_has_no_harness_imports.py` follows bare-name imports of flat `src/` modules and constant dynamic-import strings; relative imports, `src.`-qualified imports, `sys.modules[...]` / `spec_from_file_location` access and packages are not followed (Challenge Finding 1, ACCEPTed) | FRAGILITY | Harden the check if the codebase ever adopts a package layout |
 | 5.1 | On Python 3.11 (allowed by Claude.md §4) a `;` in a naive identifier raises `sqlite3.Warning`, which `apply_directly` does not catch; the naive ATTACH authorizer is never exercised by a single-statement ATTACH test (Challenge Finding 2, ACCEPTed) | FRAGILITY | Catch `sqlite3.Warning` too if 3.11 is used |
 | 5.1 | Live `claude-sonnet-5` ignored the PROMPT_INJECTION payload in every live harnessed run so far (it backfilled the true amount). If it does the same in the naive baseline, the live ablation will show no unsafe execution on either side; the naive "executes the unsafe action" behaviour is proven with a scripted agent | FRAGILITY | Report it honestly in the ablation (Session 6); it is a property of the model, not of the harness |
+| 5.2 | `execute_naive` trusts the SeedState from `prepare_naive` without re-hashing the database right before the agent call, and the hash covers only the three canonical pipeline tables (no views / triggers / extra tables) — both safe while every ablation DB is fresh and runner-owned (Challenge Findings 1, 3, ACCEPTed) | FRAGILITY | Re-hash before execute if databases are ever shared or reused |
 
 Nature values: BUG | MISSING | FRAGILITY
 

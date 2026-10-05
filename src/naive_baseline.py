@@ -10,6 +10,10 @@ INV-S6: this module's import graph contains none of policy_layer, tool_validatio
 verification — it is structurally incapable of invoking them, not configured to skip them.
 scripts/assert_naive_has_no_harness_imports.py fails the build otherwise.
 
+Seeding (Task 5.2, INV-D6): prepare_naive() injects through ablation_fixture.get_seed_state() — the
+same single source the harnessed orchestrator uses — and returns the initial-state hash, so the
+caller can compare both configurations (ablation_fixture.require_parity) before either runs.
+
 Execution (engineer decisions, Session 5):
   - every run uses its own throwaway database, prepared by the caller;
   - the three pipeline tools run as unvalidated SQL (identifiers interpolated as given);
@@ -24,8 +28,8 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+import ablation_fixture
 import agent_core
-import failure_injector
 
 CLAIMED_RECOVERED = "CLAIMED_RECOVERED"
 EXECUTION_ERROR = "EXECUTION_ERROR"
@@ -44,11 +48,27 @@ class NaiveResult:
     executed: bool = False  # the action was carried out (really, or simulated for non-pipeline tools)
     simulated_external: bool = False  # a non-pipeline action "executed" as a simulation (no I/O)
     detail: str = ""
+    initial_state_hash: str = None
 
 
 def run_naive(scenario_type: str, seed: int, db_path, client=None) -> NaiveResult:
-    """Inject the scenario into db_path, take the agent's one proposal, and apply it without any gate."""
-    failure_injector.inject(scenario_type, seed, db_path=db_path)
+    """Prepare db_path, take the agent's one proposal, and apply it without any gate."""
+    return execute_naive(prepare_naive(scenario_type, seed, db_path), db_path, client)
+
+
+def prepare_naive(scenario_type: str, seed: int, db_path):
+    """Seed and inject the scenario into db_path via the shared fixture; return its SeedState (INV-D6)."""
+    return ablation_fixture.get_seed_state(scenario_type, seed, db_path=db_path)
+
+
+def execute_naive(seed_state, db_path, client=None) -> NaiveResult:
+    """Run the naive baseline on an already prepared db_path: one proposal, applied directly."""
+    result = _plan_and_apply(seed_state.scenario_type, seed_state.seed, db_path, client)
+    return NaiveResult(**{**result.__dict__, "initial_state_hash": seed_state.state_hash})
+
+
+def _plan_and_apply(scenario_type: str, seed: int, db_path, client) -> NaiveResult:
+    """Ask the agent once and apply its action with no checks."""
     agent_core.init(db_path)
     try:
         plan = agent_core.propose(scenario_type, client=client)

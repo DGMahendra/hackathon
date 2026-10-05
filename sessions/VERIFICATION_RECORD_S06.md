@@ -282,3 +282,145 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 6.2 — Ablation Report
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Fixture data: naive PROMPT_INJECTION executes the unsafe action, harnessed blocks it | The report surfaces the contrast side by side (success and unsafe-executed rates per scenario per configuration) | N/A | PASS |
+| TC-2 (CC) | Fixture data with no difference between configurations | The report states there is no measured difference and that the model ignored the injection without the harness; nothing invented | N/A | PASS |
+| TC-3 (CC) | Class B input | Reported in its own section, labelled "not a live-model result…"; missing class B file is an error | N/A | PASS |
+
+Verification command: `python scripts/generate_ablation_report.py && test -f docs/ABLATION_REPORT.md`
+- Inputs: class A `data/ablation_results.jsonl` (live N=5, 2026-10-05); class B
+  `data/mechanism_demo_results.jsonl` (Task 6.7, 3 pairs). Both runtime data, not committed.
+- Run 1 (tests): 1 failed — CC's own expectation was wrong (the fixture's MISSING_COLUMN is 2/3
+  on both sides, so the only difference is PROMPT_INJECTION unsafe); the generator was right.
+  The test expectation was corrected, and the plan-deviation sentence made conditional (only
+  when the live naive side executed nothing on PROMPT_INJECTION), with a test each way.
+- Run 2: exit 0; `tests/session6/` **26 passed**. Generated report: no measured difference
+  (15/15 vs 15/15, 0/5 vs 0/5 unsafe on PROMPT_INJECTION, injected upload proposed 0/5 by the
+  naive agent); class B: naive executed 3/3, harnessed 0/3 with 3 POLICY_DENY; §1: recovery Met
+  (15/15), reliability Not met, safety Not met (live), repeated runs Met.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S06 "Task 6.2"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S06 Task 6.2...
+## CC Challenge — Task 6.2 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S06
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | Live PROMPT_INJECTION naive cell has **0 runs**, for example because every pair was excluded as an integrity failure. `injection["injected"] == 0` and `injection["unsafe"] == 0` both still hold, so `_live_findings` prints "proposed … in 0/0 runs", "The model ignored the injected instruction even without the harness", and the plan-deviation note. | The report would make a claim about model behaviour that no data supports. That contradicts the stated rule "computed from the data, never written in advance". | INV-D6 (excluded pairs turn into a claim) |
+| 2 | Class B file contains `ablation_integrity_failure` rows. `_mechanism_section` keeps only `type == "run"`. Class B integrity failures are dropped without being counted or shown. Class A reports them ("integrity-failure pairs excluded: N"). | INV-D6 requires the ablation report to record a mismatch as an explicit integrity failure. Class B is built from "normal ablation pairs (parity-checked)", so the same rule applies. | INV-D6 |
+| 3 | Results go in different directions across scenarios: harnessed is better in one scenario and worse in another. `_section_1_assessment` uses `any(...)`, so it marks reliability or safety **Met** even when harnessed is worse elsewhere. No test covers this. | The §1 "measurably outperforms" verdict could overstate the central claim. | NONE |
+| 4 | Naive and harnessed have different run counts in the same scenario (an unpaired or missing row). `differences()` compares raw counts, not rates. "No measured difference … identical success counts" can then be printed for different denominators, or a "difference" reported that is only a count artefact. | The side-by-side comparison could be wrong without any sign of it. | INV-D6 |
+| 5 | §1 rows when they evaluate to **Not met**: harnessed recovery is below 100% (e.g. 14/15), and "repeated ablation runs" falls below the `>= 2 * len(scenarios)` threshold. Neither case is tested. That threshold is also a total across scenarios, so one scenario with a single run can still give **Met**. | Boundary behaviour of the §1 verdicts is unverified. "Repeated" is never checked per scenario. | NONE |
+| 6 | Class B harnessed rows have a `cause` other than `POLICY_DENY`, or have `unsafe_actions_blocked` set without a DENY. The row label is hard-coded as "Blocked before Execute (Policy DENY, INV-S2)", and `blocked` is summed regardless of cause. | The label can attribute blocks to Policy DENY when the data doesn't show that. | INV-S2 (claimed in the label) |
+| 7 | Naive live rows with a `scenario_type` not in `header["scenarios"]`, or with an unknown `config` value. `load_results` validates harnessed rows only. `all_stats` silently drops these naive rows. | Naive data can disappear from the report with no error. That differs from the harnessed path, which raises. | NONE |
+| 8 | Class B file is empty, has no header, or has no harnessed rows. Its `mechanism_demo` header row is never read or validated (scenario, repetitions). | Class B could render "no runs" / "0 (causes: —)" under the evidence label without being flagged. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | Every naive run row has `claimed_success`, `unsafe_action_executed` and `proposed_action` keys. A missing key gives a `KeyError` instead of a clear validation error. | `config_stats` indexes these keys directly; `load_results` only checks harnessed rows | YES |
+| 2 | The "these three scenarios" wording is always true. It is hard-coded, but the scenario list comes from `header["scenarios"]`. | `_live_findings` literal string | YES |
+| 3 | The deviation note ("the measured result differed") is right whenever naive PROMPT_INJECTION shows `unsafe == 0`, including when there are 0 runs or the scenario is missing from the header. | Conditional on `injection["unsafe"] == 0` only | YES |
+| 4 | The class B scenario is always PROMPT_INJECTION. It is hard-coded and the class B header's `scenario` field is not checked. | `_mechanism_section` | YES |
+| 5 | The generated report's references to its own inputs (`ablation_results.jsonl`, `mechanism_demo_results.jsonl`) can be bare filenames. `source = args.input.name` and `mechanism.name` drop the `data/` path. | `render` / `main` | YES |
+| 6 | The §1 "Met (15/15)" recovery row is consistent with `docs/EVAL_REPORT.md`, which it cites as evidence. Nothing cross-checks the two. | Hard-coded citation in `_section_1_assessment` | NO (depends on the Task 6.1 artifact) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-D6 (the report must record integrity failures explicitly) — class B path | YES (`_mechanism_section` drops `ablation_integrity_failure` rows) | NO |
+| INV-D6 — class A, zero-run cell after exclusion | YES (`_live_findings`) | NO (only "excluded: 1" with runs remaining is tested) |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Whether the live N=5 class A data is representative, given LLM nondeterminism | External state (live model); a documented risk, not a code invariant |
+| Kill-and-restart demo and JSONL trace evidence rows of the §1 table | Tasks 6.4 / 6.5 artifacts; marked "Not assessed by this report" |
+| Agreement between the §1 recovery count and `docs/EVAL_REPORT.md` | Depends on the Task 6.1 artifact and its regeneration |
+| Whether the engineer's 2026-10-05 decision on the plan deviation is adequate | Needs human disposition |
+
+### Challenge Verdict
+
+FINDINGS — 5 item(s) require engineer disposition before commit.
+  Finding 1: When the naive PROMPT_INJECTION cell has 0 runs (e.g. all pairs excluded by INV-D6), `_live_findings` still prints "The model ignored the injected instruction even without the harness" and the deviation note. There is no guard on `injection["runs"] > 0` and no test for it.
+  Finding 2: `_mechanism_section` drops `ablation_integrity_failure` rows from the class B file without reporting them. INV-D6 requires the report to record integrity failures explicitly, and class A already does. Untested.
+  Finding 3: `_section_1_assessment` uses `any()` for reliability and safety, so a §1 "Met" ignores scenarios where harnessed is worse. The "repeated ablation runs" check is a total across scenarios, not per scenario. Neither the mixed-direction case nor any Not-met / boundary case is tested.
+  Finding 4: `differences()` and the "identical success counts" sentence compare raw counts without checking that naive and harnessed have the same number of runs per scenario. Naive rows with unknown scenario or config are dropped without error, because `load_results` validates harnessed rows only. Untested.
+  Finding 5: The generated `docs/ABLATION_REPORT.md` cites its inputs as bare filenames (`ablation_results.jsonl`, `mechanism_demo_results.jsonl`) via `Path.name`. Claude.md §5 Rule 1 requires full paths from repo root.
+
+**Verdict:** FINDINGS — 5
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | INV-D6 is not on the TEST list; cannot occur on the reported data (every live cell has 5 runs, 0 integrity failures). Logged as an observation (guard `runs > 0` before any model-behaviour sentence) | N/A |
+| 2 | ACCEPT | INV-D6 is not on the TEST list; the class B file has 0 integrity failures (asserted by Task 6.7 `test_summary_counts`). Logged as an observation | N/A |
+| 3 | ACCEPT | No listed invariant; the reported data has no difference in any scenario, so `any()` vs per-scenario direction cannot change any verdict here. Logged as an observation | N/A |
+| 4 | ACCEPT | INV-D6 is not on the TEST list; naive and harnessed have 5 runs in every live cell and 3 in class B. Logged as an observation | N/A |
+| 5 | TEST (Claude.md §5 Rule 1 — binding; not an invariant, fixed for compliance) | `repo_path()` cites both inputs from the repo root; `test_inputs_cited_by_repo_root_path` (stand-in repo root) | PASS |
+
+### Code Review
+Not invariant-touching (reporting only; consumes INV-D3 data).
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 6.2
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S06.md, sessions/VERIFICATION_RECORD_S06.md,
+                    scripts/generate_ablation_report.py (new), docs/ABLATION_REPORT.md (new, generated),
+                    tests/session6/test_generate_ablation_report.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    scripts/generate_ablation_report.py — config_stats, all_stats, _comparison_table,
+                    differences, _live_findings, _mechanism_section, _section_1_assessment, render, main
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- Every statement about the live comparison is computed from the input (differences, injected-
+  action proposals, the "ignored the injection" sentence, the deviation note); nothing is
+  written in advance. Raw counts are shown with every percentage.
+- Class B is a second input file, rendered in its own section with the engineer's label; the
+  generator refuses to run without it rather than omit it silently.
+- The §1 table (engineer decision rule 4) computes the data-backed rows; the kill-and-restart
+  demo and the traces are "Not assessed by this report" (they are Tasks 6.4 / 6.5 artifacts).
+- `generate_eval_report.load_results` is reused, so harnessed rows get the same consistency
+  checks (Task 6.1 Challenge Finding 4).
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

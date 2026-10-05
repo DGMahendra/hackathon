@@ -95,6 +95,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 |-------|-----------|----------|
 | Session start | Engineer waived per-session review and Pre-Build CONFIRMED waits; review deferred to end of build. | Pre-Build Validation recorded; sign-off fields "DEFERRED — engineer review at end of build"; no engineer-verified/reviewed checkbox ticked by CC |
 | Pre-Build | SESSION BLOCKED (2026-10-05): live ablation shows no naive-vs-harnessed difference, contradicting the premise of Tasks 6.2 / 6.3 and Claude.md §1's success criterion | Stopped before any task per standing instruction (decision not covered / conflict with Claude.md) |
+| 6.2 | Plan assumed a live naive failure; measured result differed; reports written to the measured results. (Task 6.2's test case — naive PROMPT_INJECTION executing, harnessed blocking — is kept as a fixture test of the generator; the live report shows the measured no-difference result, and the contrast appears only as labelled class B evidence) | Engineer decision (2026-10-05); no data altered or invented |
 
 ---
 

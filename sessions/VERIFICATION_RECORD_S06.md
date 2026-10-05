@@ -848,3 +848,117 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 6.6 — README
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| N/A | Documentation task | README per the PBVI mandatory template sections (What This Is, Project Profile, Where To Start, Repository Structure, Rule Compliance, Core Documents), linking ARCHITECTURE, INVARIANTS, EVAL_REPORT, ABLATION_REPORT, THREAT_MODEL, DEMO_SCRIPT; every link resolves; evidence classes A/B kept separate | N/A | PASS |
+
+Verification command: `test -f README.md`
+- The PBVI template text itself is not in the repo; the six section headings named in the task
+  prompt are used, in that order.
+- CC accuracy checks: all 13 markdown links resolve; every `scripts/`, `src/`, `docs/` path named
+  exists; versions read from the environment (Python 3.12.2, anthropic 1.11.0); `--dry-run` exists
+  on run_scenario.py. A first-draft claim ("the protected docs were not modified by the build") was
+  checked against `git log` and `sessions/SESSION_LOG_S01.md` and found **false**: the build includes
+  engineer planning-update commits and CC's disclosed one-byte newline edit to
+  docs/EXECUTION_PLAN.md (Session 1, accepted by the engineer). The README now states exactly that.
+- Run 1: exit 0.
+
+- Run 2 (after the Challenge Finding 1–3 wording corrections): exit 0.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S06 "Task 6.6"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S06 Task 6.6...
+## CC Challenge — Task 6.6 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S06
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | The README says `run_ablation.py --repetitions 5` makes "(30 API calls)". Nothing in the verification record checks this number. 30 = 3 scenarios × 5 reps × 2 configs, which assumes one call per run. Harnessed runs can use up to 3 attempts (INV-D1), and `src/orchestrator.py:18` retries API errors. So 30 is at best a lower bound. | A judge or presenter would underestimate the cost and runtime of the live ablation. A quantitative claim in a judge-facing doc can't be backed up. | NONE |
+| 2 | The README cites "plus an earlier N=2" ablation as class A evidence that "recovered every run". That N=2 result does not appear in the linked `docs/ABLATION_REPORT.md` (no N=2 match). It appears only in `docs/THREAT_MODEL.md:91` and `docs/traces/failure_trace.README.md:11`, and THREAT_MODEL says its data file was not kept. The record checks that links resolve, not that each class A claim is backed by the doc it points to. | A class A claim is cited next to a link to a report that doesn't contain it. This weakens the "evidence classes kept separate and traceable" property the README itself claims. | NONE |
+| 3 | The note "a few tests call the live API" for `python -m pytest tests/` was not checked. At least 10 test files mention `ANTHROPIC_API_KEY`, `skipif` or "live". The record doesn't say whether the suite skips or fails when no key is set. | Someone following "Where To Start" without a key may see failures the README doesn't mention. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | "`data/` — Runtime only, never committed". `git ls-files data` returns `data/.gitkeep`, so something under `data/` is committed. | Repo state vs the README table | YES |
+| 2 | "The 14 invariants … each one is enforced by at least one task in `docs/EXECUTION_PLAN.md`". The record shows no per-invariant check. It only confirms links and paths. | Rule Compliance section | YES |
+| 3 | "`verification/` — Reserved … (empty)". The directory is empty now. The record doesn't say this was checked, but it holds today. | Repository Structure table | YES (holds) |
+| 4 | Class A figures ("15/15 at N=5", "0 unsafe actions on either side") match `docs/ABLATION_REPORT.md` lines 18–19 and 41. The record doesn't list this cross-check among the CC accuracy checks. | What This Is section | YES (consistent on inspection) |
+
+### Invariant Coverage Gaps
+NONE. This is a documentation task, and no invariant enforcement point is touched.
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Running the "Where To Start" commands from start to finish on a clean checkout with a live key | Needs external API state and a live run |
+| Checking the live demo actually takes 3 minutes | Needs a human rehearsal (Task 6.5) |
+| Confirming the PBVI mandatory README template wording beyond the six section headings | The template text is not in the repo (noted in the record) |
+
+### Challenge Verdict
+
+FINDINGS — 3 items require engineer disposition before commit.
+  Finding 1: The README states "(30 API calls)" for `run_ablation.py --repetitions 5`. Retries make 30 a lower bound, and the number was never checked. Reword it as runs (30 paired runs) or as a minimum.
+  Finding 2: The README cites an "earlier N=2" class A result, but the linked `docs/ABLATION_REPORT.md` doesn't contain it. It is sourced only from `docs/THREAT_MODEL.md:91`, whose data file was not kept. Either cite that source or drop the claim.
+  Finding 3: "`data/` … never committed" is false because `data/.gitkeep` is tracked. "Each [invariant] is enforced by at least one task" also has no recorded per-invariant check.
+
+**Verdict:** FINDINGS — 3
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | No listed invariant; wording corrected to "30 runs, at least 30 API calls" (retries and re-plans add calls) | N/A |
+| 2 | ACCEPT | No listed invariant; the N=2 statement is now cited to `sessions/VERIFICATION_RECORD_S05.md` Task 5.3, with its data file noted as overwritten | N/A |
+| 3 | ACCEPT | No listed invariant; `data/` row corrected (only `data/.gitkeep` is tracked), the invariant-coverage claim now cites the EXECUTION_PLAN.md sign-off cross-check rather than asserting it, and the pytest line says live-API tests fail without the key | N/A |
+
+### Code Review
+Not invariant-touching (documentation only).
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 6.6
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S06.md, sessions/VERIFICATION_RECORD_S06.md, README.md (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    NONE
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES.
+
+### Scope Decisions
+- "What This Is" states the class A result (no measured difference) and class B separately, and
+  the §1 status (engineer rules 1 and 4), so the README does not overstate the central claim.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

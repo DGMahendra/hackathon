@@ -59,8 +59,8 @@ that file is a runtime output (live N=2 run of 2026-10-04, 12 runs), present loc
 | 6.2 | Ablation Report | Completed | 2d4ee9a (records: 4c3eb62) |
 | 6.3 | Threat Model Document | Completed | 80dd538 |
 | 6.4 | Capture Success & Failure Traces | Completed | 5f8d75b |
-| 6.5 | Live Demo Script | Completed | see S6.5 commit |
-| 6.6 | README | | |
+| 6.5 | Live Demo Script | Completed | 341a82f |
+| 6.6 | README | Completed | see S6.6 commit |
 | 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | 63d3b11 |
 
 Valid Status values: Completed | BLOCKED | SKIPPED

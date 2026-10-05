@@ -58,7 +58,7 @@ that file is a runtime output (live N=2 run of 2026-10-04, 12 runs), present loc
 | 6.1 | Evaluation Report | Completed | 9a2b0f7 |
 | 6.2 | Ablation Report | Completed | 2d4ee9a |
 | 6.3 | Threat Model Document | Completed | see S6.3 commit |
-| 6.4 | Capture Success & Failure Traces | | |
+| 6.4 | Capture Success & Failure Traces | Completed | see S6.4 commit |
 | 6.5 | Live Demo Script | | |
 | 6.6 | README | | |
 | 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | 63d3b11 |
@@ -85,6 +85,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 | Pre-Build | Claude.md (incl. §1 success definition) is not edited; reports state which parts of §1 were met and which were not, carried into the end-of-project reconciliation | Engineer decision (2026-10-05) |
 | Pre-Build | If no existing script can run the class B contrast, build it as Task 6.7 under `scripts/`: reuses the scripted-agent test setup, about 100 lines or fewer, no harness code change, labelled as a mechanism demo | Engineer decision (2026-10-05) |
 | Pre-Build | Scenarios and injections are not changed. Stop only for a harness bug or a failing verification command | Engineer decision (2026-10-05) |
+| 6.4 | Failure trace: no naturally-occurring UNRECOVERED run exists, so the controlled fallback is used — `scripts/capture_failure_trace.py`: real SCHEMA_DRIFT + real harness with the Session 5 test stub proposing an allowed but wrong fix (BUDGET_EXHAUSTED), labelled in `docs/traces/failure_trace.README.md`, plan events naming the stub (never a live model) | Task 6.4 prompt fallback; specific configuration CC |
 | 6.7 | No existing script runs the class B contrast (`scripts/simulate_deny_path.py` drives the harnessed funnel only; no script runs the naive side with a scripted agent), so Task 6.7 is built: `scripts/run_mechanism_demo.py` (88 lines) reuses the Session 5 test stub (`ScenarioClient` + `FIXES` from tests/session5/test_ablation_runner.py) and `run_ablation.run_pair`; no harness code changed; labelled MECHANISM DEMO. Executed after 6.1 and before 6.2, because the ablation report (6.2) reports its output. Verification command (not in EXECUTION_PLAN.md, chosen by CC): `python scripts/run_mechanism_demo.py && python -m pytest tests/session6/test_mechanism_demo.py -v` | Engineer decision (2026-10-05), rule 5; ordering and verification command CC |
 
 ---

@@ -560,3 +560,139 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 6.4 — Capture Success & Failure Traces
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| TC-1 | Both files parse as JSONL, one line at a time | `python -m json.tool --json-lines` succeeds for each | N/A | PASS |
+| TC-2 | Final lines | success trace's final line shows status=RECOVERED; failure trace's final line shows status=UNRECOVERED | N/A | PASS |
+| TC-3 | Failure-trace provenance | If no naturally-occurring UNRECOVERED run exists, the controlled artifact is labelled in docs/traces/failure_trace.README.md (not a fourth scenario, not representative MVP behaviour) | N/A | PASS |
+
+Verification command: `python -m json.tool --json-lines docs/traces/success_trace.jsonl > /dev/null && python -m json.tool --json-lines docs/traces/failure_trace.jsonl > /dev/null`
+- Success trace: live `python scripts/run_scenario.py --scenario SCHEMA_DRIFT` (claude-sonnet-5, seed
+  42) → ScenarioRun 10 RECOVERED, 7-line segment `data/trace_segments/run_0010.jsonl`, copied with
+  `cp` to `docs/traces/success_trace.jsonl` (`cmp`: byte-identical).
+- Failure trace — natural source checked first: no UNRECOVERED run exists (live ablations N=2 and
+  N=5: 21 harnessed runs, all RECOVERED, and their throwaway traces were discarded by design;
+  `data/harness.db`: ScenarioRuns 1–10 all RECOVERED). Controlled fallback per the task prompt:
+  `scripts/capture_failure_trace.py` (real SCHEMA_DRIFT + real harness, Session 5 test stub always
+  proposing an allowed but wrong backfill) → UNRECOVERED, BUDGET_EXHAUSTED after 3 attempts.
+- CC review of the first capture: the plan events said `"model": "claude-sonnet-5"` (the stub's fake
+  response carries that name, and agent_core records `response.model`), which would mislabel a
+  controlled artifact. The capture script now wraps the stub so every response names
+  `scripted-stub (controlled test artifact, not a live model)`; no harness code changed.
+- Run 1: exit 0; `tests/session6/test_traces.py` **7 passed** (both JSONL, one run each, final
+  RECOVERED / UNRECOVERED, success plan model is claude-sonnet-5, failure attempts_used 1→2→3 with
+  3 verification FAILs, failure plans never name a live model, the README labels it controlled, and
+  the script reproduces the committed failure trace exactly apart from timestamps).
+
+- Run 2 (after the Challenge Finding 2 / 4 tests, the Finding 3 rename and the README
+  correction): exit 0; `tests/session6/test_traces.py` **9 passed**.
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S06 "Task 6.4"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S06 Task 6.4...
+## CC Challenge — Task 6.4 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S06
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | Neither committed trace is checked for the INV-D4 "when applicable" rule. Nothing asserts that every `tool_call` and `policy_decision` event has a non-null `attempt_id`. `test_trace_is_one_complete_run_ending_in_status` only checks the key set and that there is one `scenario_run_id`. | INV-D4 is the only invariant this task names. A hand-edited or truncated trace with `attempt_id: null` on a policy or tool event would still pass every test and the verification command. | INV-D4 |
+| 2 | Nothing checks that the success trace is a SCHEMA_DRIFT run (`run_started.payload.scenario_type` is never asserted). Nothing checks that a verification `PASS` event comes before `run_complete: RECOVERED`. | The task prompt specifically requires a SCHEMA_DRIFT run. Without the PASS-before-RECOVERED check, the artifact is not checked as evidence that Verification, not the agent, declared success. | INV-S5 (as trace evidence) |
+| 3 | `test_success_trace_is_a_live_run` checks only `model == "claude-sonnet-5"`. The verification record itself says the unwrapped Session 5 stub also emits `"claude-sonnet-5"`. | The test's name says "live run", but it cannot tell a live run from a stub run. Nothing committed checks the claimed provenance (ScenarioRun 10, byte-identical copy of `data/trace_segments/run_0010.jsonl`). | NONE |
+| 4 | In the failure trace, nothing checks that each attempt has the full ALLOW → VALID → `tool_call` → FAIL sequence. Only `attempts_used` and the verification results are asserted. | `docs/traces/failure_trace.README.md` describes all four steps per attempt as what the artifact shows. Only two of the four are tested. | INV-S1 (as trace evidence) |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | `docs/traces/failure_trace.README.md` says the run ends "with … a failure reason at every step (INV-D3)". The trace has no `failure_reason` field, and `tool_validation.reason` is `null`. The Attempt rows that would hold `failure_reason` are in a temp database that is deleted after the run. | The README makes the claim; nothing in the trace or the tests supports it. | YES (assert it against the throwaway DB inside `capture()` or a test, or reword the README) |
+| 2 | The check for a natural UNRECOVERED run looked only at the 21 harnessed runs and at `data/harness.db`. The task prompt says "any run from Session 5's ablation runs (Task 5.3)", which may include the naive-side runs. The record does not say whether naive runs were checked or can have an UNRECOVERED status. | Verification record narrative only. | NO (depends on runtime data in `data/` that is not committed) |
+| 3 | `capture()` calls `orchestrator.init(db_path, trace_path)` on module-global state. That state is left pointing at a deleted temp directory when the context manager exits. | `scripts/capture_failure_trace.py:57-59`. Under pytest, later tests in the same process that use `orchestrator` without calling `init` again would inherit stale paths. | YES |
+| 4 | Reproducibility assumes the stub's behaviour (`ScenarioClient` in `tests/session5/test_ablation_runner.py`) is stable. The stub is loaded from a test file by its path. | `STUB_SOURCE` uses `importlib` to load a test module. The test that regenerates the trace covers this today, but only while that test file keeps the same constructor signature. | YES (already partly covered) |
+
+### Invariant Coverage Gaps
+| Invariant | Enforcement point touched | Tested in verification record |
+|-----------|--------------------------|-------------------------------|
+| INV-D4 (consumed) | NO (artifact only) | NO — the attempt-level referential rule is not checked on either committed trace |
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| Whether the success trace really is a byte-identical copy of the live ScenarioRun 10 segment | `data/trace_segments/` and `data/harness.db` are uncommitted runtime state; this needs the engineer to check it locally. |
+| Whether any Task 5.3 ablation run, naive or harnessed, ended UNRECOVERED | Those throwaway traces were discarded in Session 5, so this can't be re-checked now. |
+| A naturally occurring live UNRECOVERED run | Needs live model behaviour that has not happened; this is external state. |
+
+### Challenge Verdict
+
+FINDINGS — 4 item(s) require engineer disposition before commit.
+  Finding 1: `tests/session6/test_traces.py` does not check INV-D4's attempt-level rule. Add an assertion that every `tool_call` and `policy_decision` event in both traces has a non-null `attempt_id`, and that each attempt's events stay within the one `scenario_run_id`.
+  Finding 2: The success trace is not checked to be SCHEMA_DRIFT (`run_started.scenario_type`), and nothing checks that a verification `PASS` comes before `run_complete: RECOVERED`. Both can be tested against the committed file.
+  Finding 3: `test_success_trace_is_a_live_run` cannot tell a live run from the unwrapped stub, because both emit `claude-sonnet-5`. Either strengthen it, for example by asserting the plan's diagnosis and reasoning are not the stub's `"d"`/`"r"` placeholders, or rename it so it does not claim to prove the run was live.
+  Finding 4: The README's statement "a failure reason at every step (INV-D3)" has no support in the trace and no test. Either verify it against the throwaway DB's Attempt rows in `capture()` or a test, or remove the claim. Also assert the full ALLOW → VALID → `tool_call` → FAIL sequence per attempt that the README describes.
+
+**Verdict:** FINDINGS — 4
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | ACCEPT | INV-D4 is not on the TEST list; both traces are segments written by the Trace Logger, whose INV-D4 enforcement is tested in Session 1. The new funnel-order test (Finding 4) incidentally shows every failure-trace attempt event carries one of 3 attempt_ids | N/A |
+| 2 | TEST (INV-S5) | `test_success_is_schema_drift_and_verified_before_recovered`: run_started is SCHEMA_DRIFT; the last two events are a verification PASS then run_complete RECOVERED | PASS |
+| 3 | ACCEPT | No listed invariant; provenance (ScenarioRun 10, `cmp` byte-identical copy) is recorded in this entry. The test is renamed `test_success_trace_names_the_live_model` so it claims no more than it checks | N/A |
+| 4 | TEST (INV-S1) | `test_failure_attempts_follow_the_funnel_order`: the attempt events are exactly (policy ALLOW, validation VALID, tool_call, verification FAIL) × 3 across 3 attempt_ids. The unsupported README sentence ("a failure reason at every step (INV-D3)") is replaced by what the trace actually holds, and says the Attempt rows' failure_reason lived in the throwaway database | PASS |
+
+### Code Review
+Not invariant-touching (artifact capture; consumes INV-D4).
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 6.4
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S06.md, sessions/VERIFICATION_RECORD_S06.md,
+                    docs/traces/success_trace.jsonl (new), docs/traces/failure_trace.jsonl (new),
+                    docs/traces/failure_trace.README.md (new), scripts/capture_failure_trace.py (new),
+                    tests/session6/test_traces.py (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    scripts/capture_failure_trace.py — LabelledStub (__init__, create), capture, main
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the CC choices under
+Scope Decisions.
+
+### Scope Decisions
+CC implementation choices (not separately specified):
+- The controlled configuration is a scripted wrong-fix agent on the real SCHEMA_DRIFT scenario
+  (the task's example was "a deliberately degraded seed fixture"; this keeps the scenarios and
+  injections unchanged per engineer rule 6 and shows the retry budget and Verification failing).
+- The capture is a committed script so the artifact is reproducible, not a one-off command.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

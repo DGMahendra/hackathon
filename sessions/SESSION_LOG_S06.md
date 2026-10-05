@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress (resumed after engineer decision on the ablation evidence)
+**Status:** Integration check passed (resumed after engineer decision on the ablation evidence)
 
 ## Pre-Build Validation
 
@@ -60,8 +60,8 @@ that file is a runtime output (live N=2 run of 2026-10-04, 12 runs), present loc
 | 6.3 | Threat Model Document | Completed | 80dd538 |
 | 6.4 | Capture Success & Failure Traces | Completed | 5f8d75b |
 | 6.5 | Live Demo Script | Completed | 341a82f |
-| 6.6 | README | Completed | see S6.6 commit |
-| 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | 63d3b11 |
+| 6.6 | README | Completed | 10c596b |
+| 6.7 | Mechanism Demo (scripted adversarial agent) — engineer-added | Completed | 63d3b11 (executed after 6.1, before 6.2) |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 
@@ -71,7 +71,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 
 | Date | Blocked at | Resolution | Resumed from task | Completed |
 |------|-----------|------------|-------------------|-----------|
-| 2026-10-05 | Pre-Build (SESSION BLOCKED: live ablation shows no naive-vs-harnessed difference) | Engineer chose Option 1 with rules (Decision Log) | 6.1 (after an N=5 live ablation) | |
+| 2026-10-05 | Pre-Build (SESSION BLOCKED: live ablation shows no naive-vs-harnessed difference) | Engineer chose Option 1 with rules (Decision Log) | 6.1 (after an N=5 live ablation) | Yes — Tasks 6.1–6.7 |
 
 ---
 
@@ -122,10 +122,35 @@ Nature values: BUG | MISSING | FRAGILITY
 
 ---
 
+## Session Integration Check
+
+**Run:** 2026-10-05 at `10c596b` (also the final project sign-off check).
+
+```bash
+ls docs/EVAL_REPORT.md docs/ABLATION_REPORT.md docs/THREAT_MODEL.md    docs/traces/success_trace.jsonl docs/traces/failure_trace.jsonl README.md
+```
+
+**Result:** exit 0 — all six artifacts present. Full regression `tests/` (live `claude-sonnet-5`
+tests included): 1048 passed. Runtime data not committed: `data/ablation_results.jsonl` (live N=5),
+`data/mechanism_demo_results.jsonl`, `data/trace.jsonl`, `data/trace_segments/`.
+
+**For the end-of-project reconciliation (engineer):**
+- Claude.md §1 against the measured evidence (docs/ABLATION_REPORT.md): recovery of the three
+  scenarios **met** (15/15 live); repeated ablation runs **met**; *measurably outperforms the naive
+  baseline on reliability* **not met**; *on safety* **not met** in live data (N=2 and N=5: no
+  difference; the model never proposed the injected action in 18 live PROMPT_INJECTION runs) — the
+  model-independent guarantee is shown only by class B (scripted) evidence; live kill-and-restart
+  demo scripted and rehearsed (docs/DEMO_SCRIPT.md); judge-inspectable JSONL traces present (failure
+  trace is a labelled controlled artifact — no live run has failed).
+- Observations above: the shared system prompt lists only the three repair tools (may contribute to
+  the live result); report-generator robustness gaps (6.2); demo kill timing (6.5).
+
+---
+
 ## Session Completion
-**Session integration check:** [ ] PASSED
+**Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
 **PR raised:** [ ] Yes — PR #: [branch] → main
-**Status updated to:** 
-**Engineer sign-off:** 
+**Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
+**Engineer sign-off:** DEFERRED — engineer review at end of build

@@ -129,6 +129,6 @@ trace_logger) contains none of policy_layer, tool_validation, verification". Ful
 **Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
-**PR raised:** [ ] Yes — PR #: [branch] → main
+**PR raised:** [x] Yes — PR #5: session/s05_ablation → main (https://github.com/DGMahendra/hackathon/pull/5)
 **Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
 **Engineer sign-off:** DEFERRED — engineer review at end of build

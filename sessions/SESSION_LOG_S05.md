@@ -7,7 +7,7 @@
 **Claude.md version:** v1.3
 **Execution mode:** [ ] Manual (prediction discipline, prediction before verification)
                   | [x] Autonomous (sequential, no interruption, no prediction)
-**Status:** In Progress (resumed after engineer decisions on the INV-S6 conflict)
+**Status:** Integration check passed (resumed after engineer decisions on the INV-S6 conflict)
 
 ## Pre-Build Validation
 
@@ -53,7 +53,7 @@ the conflict below.**
 |---------|-----------|--------|--------|
 | 5.1 | Naive Baseline (Structurally Stripped) | Completed | 2a8586a |
 | 5.2 | Seed/Failure-State Parity Fixture | Completed | 7a35fcb |
-| 5.3 | Ablation Runner | Completed | see S5.3 commit |
+| 5.3 | Ablation Runner | Completed | d3441bf |
 
 Valid Status values: Completed | BLOCKED | SKIPPED
 
@@ -109,10 +109,26 @@ Nature values: BUG | MISSING | FRAGILITY
 
 ---
 
+## Session Integration Check
+
+**Run:** 2026-10-05 at `d3441bf`.
+
+```bash
+python -m pytest tests/session5/ -v && python scripts/assert_naive_has_no_harness_imports.py
+```
+
+**Result:** exit 0. `tests/session5/`: 59 passed. `assert_naive_has_no_harness_imports.py`: "INV-S6 OK:
+naive_baseline.py import graph (src modules: ablation_fixture, agent_core, env_file, failure_injector,
+trace_logger) contains none of policy_layer, tool_validation, verification". Full regression `tests/`
+(live `claude-sonnet-5` tests included): 1012 passed. `data/ablation_results.jsonl` (live N=2 run) and
+`data/trace.jsonl` are runtime outputs and are not committed.
+
+---
+
 ## Session Completion
-**Session integration check:** [ ] PASSED
+**Session integration check:** [x] PASSED — see Session Integration Check (exit 0)
 **All tasks verified:** [ ] Yes
 **Blocked tasks resolved:** [ ] Yes — N/A if no BLOCKED tasks occurred
 **PR raised:** [ ] Yes — PR #: [branch] → main
-**Status updated to:** 
-**Engineer sign-off:** 
+**Status updated to:** Integration check passed; merging into main with a regular merge commit per engineer standing instruction (2026-10-04)
+**Engineer sign-off:** DEFERRED — engineer review at end of build

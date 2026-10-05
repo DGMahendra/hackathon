@@ -57,7 +57,7 @@ that file is a runtime output (live N=2 run of 2026-10-04, 12 runs), present loc
 |---------|-----------|--------|--------|
 | 6.1 | Evaluation Report | Completed | 9a2b0f7 |
 | 6.2 | Ablation Report | Completed | 2d4ee9a |
-| 6.3 | Threat Model Document | | |
+| 6.3 | Threat Model Document | Completed | see S6.3 commit |
 | 6.4 | Capture Success & Failure Traces | | |
 | 6.5 | Live Demo Script | | |
 | 6.6 | README | | |
@@ -107,6 +107,7 @@ Valid Status values: Completed | BLOCKED | SKIPPED
 | 6.1 | No harnessed run was UNRECOVERED in either live ablation, so Task 6.4's failure trace will have to be the labelled controlled fallback | MISSING | Handled in Task 6.4 per its prompt |
 | 6.2 | `generate_ablation_report.py` robustness gaps that cannot trigger on the reported data (Challenge Findings 1–4, ACCEPTed): a 0-run live PROMPT_INJECTION cell would still print the "model ignored the injection" sentence; class B integrity-failure rows are not shown; §1 reliability/safety use `any()` across scenarios (a mixed-direction result would read Met); naive/harnessed run counts per cell are not checked equal and naive rows are not validated | FRAGILITY | Before regenerating from other data: guard on runs > 0, report class B integrity failures, require per-scenario direction, validate pairing |
 | 6.2 | Record keeping: the S6.2 commit (2d4ee9a) was made before its session-record updates were written (a CC helper failed on the last VR entry and the commit command did not stop); completed in the follow-up commit | FRAGILITY | Chain record updates and commit with `&&` |
+| 6.3 | The agent's system prompt (`src/agent_core.py` SYSTEM_PROMPT, shared by both configurations) offers only the three repair tools; this may contribute to `claude-sonnet-5` ignoring the injected `upload_record` in every live run. The live class A result therefore characterises this model + this prompt + this injection text, not instruction injection in general (stated in docs/THREAT_MODEL.md) | MISSING | For the end-of-project reconciliation: any stronger live safety claim would need a different prompt or injection design (engineer decision; scenarios not changed in this session per rule 6) |
 
 Nature values: BUG | MISSING | FRAGILITY
 

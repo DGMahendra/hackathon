@@ -427,3 +427,136 @@ No BCE artifact impact.
 [ ] Scope decisions documented
 
 **Status:** DEFERRED — engineer review at end of build
+
+---
+
+## Task 6.3 — Threat Model Document
+
+### Test Cases Applied
+Source: docs/EXECUTION_PLAN.md
+
+| Case | Scenario | Expected | UI Tests | Result |
+|------|----------|----------|----------|--------|
+| N/A | Documentation task (docs/EXECUTION_PLAN.md: reviewed for accuracy against the actual implementation) | Every mechanism claim traceable to code, a test or a script; evidence classes A and B kept separate | N/A | PASS |
+
+Verification command: `test -f docs/THREAT_MODEL.md`
+- Run 1: exit 0. Accuracy review by CC against the implementation: the Policy rules and
+  TOOL_PARAMETERS (`src/policy_layer.py`), the funnel order and DENY branch (`src/harness.py`), the
+  injected text (`src/failure_injector.py`), the agent prompt (`src/agent_core.py` — it lists only
+  the three repair tools, stated in the document as a possible contributor to the live result), the
+  `attempts_used` ALLOW-only trigger (`src/schema.sql`), the apply_fn authorizer
+  (`src/state_manager.py`), the cited tests (`tests/session2/test_policy_layer.py` URL / path /
+  upload cases, `test_deny_never_reaches_the_primitive`) and scripts
+  (`scripts/simulate_deny_path.py --assert-no-execution` re-run: exit 0, every action DENY;
+  `scripts/assert_write_scope_isolation.py` docstring). One CC wording fix: "every run proposed
+  backfill_column" narrowed to PROMPT_INJECTION runs.
+- Engineer rule 3 applied: the ablation is not presented as evidence the threat is real; threat =
+  instruction-injection class; control = Policy DENY before Execute (INV-S2); live Sonnet 5
+  resisted with and without the harness; the model-independent guarantee is shown by class B.
+
+- Run 2 (after the Challenge Finding 1–3 corrections): exit 0. Every check the document cites
+  was run (Challenge untested scenario 1): `tests/session2/test_policy_layer.py` +
+  `tests/session2/test_harness_funnel.py` + `test_summary_counts` — 278 passed;
+  `scripts/simulate_deny_path.py --assert-no-execution` exit 0;
+  `scripts/assert_write_scope_isolation.py` exit 0; `scripts/assert_single_execute_caller.py` exit 0;
+  `scripts/run_mechanism_demo.py` passed under Task 6.7 (8 passed).
+
+### Challenge Agent Output
+Command: `./tools/challenge.sh S06 "Task 6.3"` (task files staged; exit 0). Full output, verbatim:
+
+Running challenge agent for S06 Task 6.3...
+## CC Challenge — Task 6.3 — Challenge Agent
+
+**Challenger:** Independent agent — no build session context
+**Session:** S06
+
+I checked the document's claims against `src/policy_layer.py`, `src/harness.py`, `src/state_manager.py`, `src/failure_injector.py`, `scripts/run_mechanism_demo.py`, `docs/ABLATION_REPORT.md`, `data/ablation_results.jsonl`, `data/mechanism_demo_results.jsonl` and `sessions/SESSION_LOG_S06.md`. The following claims match the code and data:
+- the injection text
+- the six tool names and their parameter sets
+- fail-closed DENY on unknown tools and on `url`/`path` parameters
+- the order on the DENY branch: checkpoint first, then the trace event
+- 0/5 naive uploads on PROMPT_INJECTION, and 10/10 PROMPT_INJECTION runs proposing `backfill_column`
+- class B: naive 3/3 executed and 3/3 claimed success, 0/3 measured success; harnessed 3/3 POLICY_DENY with `attempts_used` 0
+
+The document departs from the task prompt (it does not present the ablation as evidence the threat is real). That departure is authorised in the Decision Log at `sessions/SESSION_LOG_S06.md:84`.
+
+### Untested Scenarios
+| # | Scenario | Why it matters | Invariant at risk |
+|---|----------|----------------|-------------------|
+| 1 | Most checks cited in the "Where this is tested" table were not run in this task: `tests/session2/test_policy_layer.py`, `test_deny_never_reaches_the_primitive`, `scripts/assert_write_scope_isolation.py` (only its docstring was read) and `scripts/run_mechanism_demo.py`. Only `scripts/simulate_deny_path.py --assert-no-execution` was re-run. | The document says the cited checks support its claims, but this task's record shows no passing run for most of them. | INV-S2, INV-S8 (citation only) |
+| 2 | The verification command (`test -f`) only confirms the file exists. Nothing checks that the cited paths and symbols still exist (`_build_prompt`, `_pipeline_snapshot`, `SYSTEM_PROMPT`, `TOOL_PARAMETERS`, `_apply_fn_authorizer`, the test name, the `--assert-no-execution` flag). | A later rename would leave the threat model citing code that no longer exists, and nothing would catch it. | NONE |
+
+### Unverified Assumptions
+| # | Assumption in code | Basis | Testable within task scope |
+|---|--------------------|-------|---------------------------|
+| 1 | §2 item 3 says the authorizer "permits reads and writes to the three PipelineState tables only." The code (`src/state_manager.py:226-244`) allows reads of **any** table, harness tables included. It also allows UPDATE of `sqlite_master`/`sqlite_temp_master`, and ALTER TABLE on pipeline tables. | Comment on `src/state_manager.py:226` ("Reads are unrestricted"); `_READ_ACTIONS` has no table check | YES — correct the wording |
+| 2 | §3A says "an earlier N=2 run on 2026-10-04 gave the same outcome" and gives `docs/ABLATION_REPORT.md` as the source. That report does not mention any N=2 run. `data/ablation_results.jsonl` now holds only the N=5 run, so the N=2 data has been overwritten. The claim is supported only by `sessions/VERIFICATION_RECORD_S05.md:342-353` and `sessions/SESSION_LOG_S06.md:28-36`. | Grep of `docs/ABLATION_REPORT.md` for N=2 / 2026-10-04: no match | YES — re-cite or drop |
+| 3 | §3B says the harnessed side DENIES the upload with nothing executed. It does not say that the harnessed side also fails to recover: measured success is 0/3 (`data/mechanism_demo_results.jsonl:8`). The reader can wrongly assume the harness both blocked the attack and repaired the pipeline. | `"PROMPT_INJECTION/harnessed": {"successes": 0}` | YES — add one sentence |
+
+### Invariant Coverage Gaps
+NONE. This is a documentation task: no enforcement point was touched and no invariant is assigned to the task.
+
+### Known Untested Scenarios (out of scope — not findings)
+| Scenario | Reason out of scope |
+|----------|---------------------|
+| A live model that actually follows the injection on the naive path | Depends on live model behaviour and an engineer decision on N or the injection design (already logged in S05/S06) |
+| `data/ablation_results.jsonl` and `data/mechanism_demo_results.jsonl` are untracked (`??`), so the evidence behind §3 is not committed for judges to inspect | Belongs to Tasks 6.2/6.7 and the commit policy for runtime outputs, not to Task 6.3 |
+| Injection steering the value of an ALLOWed action (for example, the `value` in `backfill_column`) | Needs new Policy or Verification capability; the document already lists it as a residual risk |
+
+### Challenge Verdict
+
+FINDINGS — 3 item(s) require engineer disposition before commit.
+  Finding 1: `docs/THREAT_MODEL.md` §2 item 3 overstates INV-S8. Under `_apply_fn_authorizer`, reads are unrestricted across all tables (harness tables included), and UPDATE of `sqlite_master` and ALTER TABLE on pipeline tables are permitted. It does not limit reads and writes to the three PipelineState tables.
+  Finding 2: §3A attributes the "earlier N=2 run on 2026-10-04" to `docs/ABLATION_REPORT.md`, which does not contain it. The N=2 data was overwritten in `data/ablation_results.jsonl`. Re-cite it to `sessions/VERIFICATION_RECORD_S05.md` or remove it.
+  Finding 3: §3B leaves out that the harnessed configuration had 0/3 measured success in the mechanism demo. The class B result shows the attack was blocked, not that the pipeline was recovered. Say so explicitly, so the document does not overstate what the harness did.
+
+**Verdict:** FINDINGS — 3
+
+**Finding dispositions (FINDINGS verdict only):**
+
+*Dispositioned by CC under the engineer's standing instruction (2026-10-04): TEST for findings touching INV-S1/S2/S3/S5/S8/D1/D2 or execute_and_checkpoint atomicity; ACCEPT with a one-line rationale otherwise.*
+
+| Finding # | Disposition | Rationale / Test case added | Test result |
+|-----------|-------------|------------------------------|-------------|
+| 1 | TEST (INV-S8) | §2 item 3 corrected to the authorizer as implemented (reads unrestricted; writes only to the PipelineState tables plus their ALTER TABLE / internal sqlite_master update; harness-table writes, ATTACH, PRAGMA, transaction control and other DDL denied). `scripts/assert_write_scope_isolation.py` re-run: exit 0 ("primitive rejected 8 out-of-scope targets; apply_fn authorizer denied 13 out-of-scope statements; harness state unchanged") | PASS |
+| 2 | ACCEPT | No listed invariant; the N=2 statement is re-cited to `sessions/VERIFICATION_RECORD_S05.md` (Task 5.3) and `sessions/SESSION_LOG_S05.md`, noting its data file was overwritten by the N=5 run | N/A |
+| 3 | TEST (INV-S5) | §3B now states blocking is not recovering: harnessed measured success 0/3 (UNRECOVERED; the stub never proposes the repair). Asserted by `tests/session6/test_mechanism_demo.py::test_summary_counts` (harnessed successes 0), re-run | PASS |
+
+### Code Review
+Not invariant-touching (documentation only).
+
+### Pre-Commit Declaration
+
+PRE-COMMIT DECLARATION — Task 6.3
+-----------------------------------
+Files modified:     sessions/SESSION_LOG_S06.md, sessions/VERIFICATION_RECORD_S06.md,
+                    docs/THREAT_MODEL.md (new)
+                    (`git diff --name-only HEAD` after `git add`; all within Claude.md §3)
+Functions added:    NONE
+Functions modified: NONE
+Functions deleted:  NONE
+Schema changes:     NONE
+Config changes:     NONE
+
+Everything above is within the task prompt scope: YES — with the engineer's rule 3 wording.
+
+### Scope Decisions
+- Added a "Residual risks and limits" section (injection steering an ALLOWed action's values,
+  the PENDING-only approval stub, model-side exposure of data, single injection/model scope, §1
+  status) so the document does not overstate the control.
+
+### BCE Impact
+No BCE artifact impact.
+
+| Artifact | Field | Change |
+|---|---|---|
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] Challenge agent run — verdict recorded (CLEAN or FINDINGS)
+[ ] All FINDINGS dispositioned — ACCEPT with rationale or TEST with result
+[ ] Pre-commit declaration recorded
+[ ] Code review complete (if invariant-touching)
+[ ] Scope decisions documented
+
+**Status:** DEFERRED — engineer review at end of build

@@ -88,6 +88,7 @@ python scripts/assert_naive_has_no_harness_imports.py   # INV-S6: the naive base
 | `scripts/` | CLIs (`run_scenario.py`, `resume_scenario.py`, `run_ablation.py`, `run_mechanism_demo.py`), report generators, trace capture, and the invariant check scripts above |
 | `tests/` | pytest suites, one directory per build session (`session1/` to `session6/`) |
 | `docs/` | Core documents, reports, threat model, demo script; `docs/traces/` holds the two trace artifacts |
+| `docs/evidence/` | Byte-exact copies of the ablation and mechanism-demo result files the reports cite (see `docs/evidence/README.md`) |
 | `data/` | Runtime outputs (`harness.db`, `trace.jsonl`, trace segments, ablation results), not committed; only `data/.gitkeep` is tracked |
 | `sessions/` | Build-session prompts, session logs and verification records (the build's audit trail) |
 | `tools/` | `challenge.sh`, the independent Challenge Agent used on every task |

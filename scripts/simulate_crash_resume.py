@@ -54,7 +54,9 @@ import state_manager  # noqa: E402
 import trace_logger  # noqa: E402
 
 SCENARIO, SEED = "SCHEMA_DRIFT", 42
-FIX = {"tool": "rename_column", "params": {"table": "pipeline_silver", "old_name": "amt", "new_name": "amount"}}
+from failure_injector import DRIFT_COLUMN, DRIFT_RENAMED_TO  # noqa: E402
+
+FIX = {"tool": "rename_column", "params": {"table": "pipeline_silver", "old_name": DRIFT_RENAMED_TO, "new_name": DRIFT_COLUMN}}
 KILL_POINTS = {  # name → (expected action_applied, expected last_stage after the kill, crash timing)
     "before_pre_execute": (False, "tool_validation", "before pre_execute"),
     "mid_apply": (False, "pre_execute", "after pre_execute, before commit"),
@@ -69,7 +71,7 @@ THREE_TIMINGS = ("before pre_execute", "after pre_execute, before commit", "afte
 
 def _fake_api_client():
     """A Claude client served by an in-process fake API that always proposes FIX."""
-    text = json.dumps({"diagnosis": "amount was renamed to amt", "reasoning": "rename it back",
+    text = json.dumps({"diagnosis": f"{DRIFT_COLUMN} was renamed to {DRIFT_RENAMED_TO}", "reasoning": "rename it back",
                        "tool": FIX["tool"], "params_json": json.dumps(FIX["params"])})
     body = json.dumps({"id": "msg", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
                        "content": [{"type": "text", "text": text}], "stop_reason": "end_turn",
@@ -160,9 +162,9 @@ def _crash(kill_point: str, db_path: Path, trace_path: Path) -> dict:
 
 
 def _mutated(db_path: Path) -> bool:
-    """True iff FIX is present in the pipeline (silver's amt column renamed back to amount)."""
+    """True iff FIX is present in the pipeline (silver's DRIFT_RENAMED_TO column renamed back to DRIFT_COLUMN)."""
     with closing(sqlite3.connect(db_path)) as conn:
-        return "amount" in [row[1] for row in conn.execute('PRAGMA table_info("pipeline_silver")')]
+        return DRIFT_COLUMN in [row[1] for row in conn.execute('PRAGMA table_info("pipeline_silver")')]
 
 
 def _integrity_ok(db_path: Path) -> bool:

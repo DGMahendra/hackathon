@@ -92,13 +92,13 @@ def init(db_path, trace_path) -> None:
     agent_core.init(db_path)
 
 
-def run_scenario(scenario_type: str, seed: int, client=None, parity_with=None) -> ScenarioResult:
+def run_scenario(scenario_type: str, seed: int, client=None, parity_with=None, variant: str = None) -> ScenarioResult:
     """Inject scenario_type's failure, then plan and attempt fixes until recovered or stopped.
     With parity_with (the naive side's SeedState), the initial states are compared before the agent
     is asked for anything; a mismatch raises ablation_fixture.AblationIntegrityError (INV-D6)."""
     run_id = state_manager.start_run(scenario_type, exclusive=True)  # INV-S7: RunInProgressError if one is live
     try:
-        seed_state = ablation_fixture.get_seed_state(scenario_type, seed)  # the single source (INV-D6)
+        seed_state = ablation_fixture.get_seed_state(scenario_type, seed, variant=variant)  # the single source (INV-D6)
         if parity_with is not None:
             ablation_fixture.require_parity(parity_with, seed_state)
         state_manager.checkpoint(run_id, "run_started", {})

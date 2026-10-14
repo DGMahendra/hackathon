@@ -1,0 +1,28 @@
+{
+  "_readme": "Edit this file to change what the failure scenarios break. Restart the server (with --reset) after editing. Every value is validated at startup by src/pipeline_config.py. Set DATAOPS_CONFIG=/path/to/other.json to use a different file.",
+
+  "run": {
+    "seed": 42,
+    "model": "claude-sonnet-5"
+  },
+
+  "seed_data": {
+    "row_count": 12,
+    "customers": ["acme", "globex", "initech", "umbrella", "hooli"],
+    "regions": ["NA", "EU", "APAC"],
+    "amount_min": 10,
+    "amount_max": 500
+  },
+
+  "scenarios": {
+    "SCHEMA_DRIFT":     {"column": "amount", "renamed_to": "amt"},
+    "MISSING_COLUMN":   {"column": "region"},
+    "PROMPT_INJECTION": {"null_column": "amount"},
+    "NULL_ONLY":        {"null_column": "region"}
+  },
+
+  "control_center": {
+    "human_approval_tools": ["backfill_column"],
+    "approval_timeout_seconds": 600
+  }
+}

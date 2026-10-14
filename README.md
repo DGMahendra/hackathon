@@ -80,6 +80,12 @@ python scripts/assert_write_scope_isolation.py          # INV-S8: Execute writes
 python scripts/assert_naive_has_no_harness_imports.py   # INV-S6: the naive baseline has no gates
 ```
 
+## Changing the scenarios
+
+Which column each scenario breaks, the seed, the seed data and the model name are set in
+`config/pipeline.json` (no code changes). See `docs/CONFIGURATION.md` for every field, the rules
+the loader enforces and what is deliberately kept out of the config.
+
 ## Repository Structure
 
 | Path | Contents |

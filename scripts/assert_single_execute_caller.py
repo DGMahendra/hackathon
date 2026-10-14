@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCANNED_DIRECTORIES = ("src", "scripts", "tools", "verification")
+SCANNED_DIRECTORIES = ("src", "scripts", "tools", "verification", "ui")
 FUNNEL = "src/harness.py"
 CHECK_SCRIPTS = (
     "scripts/assert_write_scope_isolation.py",  # INV-S8 runtime check exercises the primitive

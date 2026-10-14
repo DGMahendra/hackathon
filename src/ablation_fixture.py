@@ -33,9 +33,9 @@ class SeedState:
     description: str  # what was injected — for traces, never for the agent
 
 
-def get_seed_state(scenario_type: str, seed: int, db_path=None) -> SeedState:
+def get_seed_state(scenario_type: str, seed: int, db_path=None, variant: str = None) -> SeedState:
     """Seed and inject scenario_type into db_path (default: failure_injector's database); return its state."""
-    injection = failure_injector.inject(scenario_type, seed, db_path=db_path)
+    injection = failure_injector.inject(scenario_type, seed, db_path=db_path, variant=variant)
     return SeedState(scenario_type, seed, state_hash(db_path), injection.description)
 
 

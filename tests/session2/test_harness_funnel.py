@@ -457,7 +457,7 @@ def test_call_site_counter_counts_owner_qualified_calls():
 # Challenge Finding 2: tools/ and verification/ are scanned too.
 def test_single_caller_check_scans_every_permitted_code_directory():
     checker = _single_caller_checker()
-    assert set(checker.SCANNED_DIRECTORIES) == {"src", "scripts", "tools", "verification"}
+    assert set(checker.SCANNED_DIRECTORIES) == {"src", "scripts", "tools", "verification", "ui"}
     assert checker.CHECK_SCRIPTS == ("scripts/assert_write_scope_isolation.py", "scripts/simulate_deny_path.py",
                                      "scripts/simulate_crash_resume.py")
 

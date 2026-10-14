@@ -30,7 +30,7 @@ from run_scenario import init_db, orchestrator  # noqa: E402
 
 DEFAULT_OUTPUT = REPO_ROOT / "docs" / "traces" / "failure_trace.jsonl"
 STUB_SOURCE = REPO_ROOT / "tests" / "session5" / "test_ablation_runner.py"
-SCENARIO, SEED = "SCHEMA_DRIFT", 42
+SCENARIO, SEED = "SCHEMA_DRIFT", run_scenario.DEFAULT_SEED
 WRONG_FIX = {"tool": "backfill_column", "params": {"table": "pipeline_silver", "column": "customer", "value": "x"}}
 STUB_MODEL = "scripted-stub (controlled test artifact, not a live model)"
 

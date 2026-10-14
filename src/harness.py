@@ -61,10 +61,31 @@ def init(db_path, trace_path) -> None:
 def attempt_action(scenario_run_id: int, attempt_id: int, action) -> AttemptOutcome:
     """Route action through Policy → Tool Validation → Execute → Verify, checkpointing each stage."""
     decision = policy_layer.evaluate(action)
+    if decision is PolicyDecision.REQUIRE_APPROVAL:
+        return _approval_path(scenario_run_id, attempt_id, action)
     if decision is not PolicyDecision.ALLOW:
         return _record_blocked(scenario_run_id, attempt_id, decision, action)
     _record_allow(scenario_run_id, attempt_id, action)
     return _validate_execute_verify(scenario_run_id, attempt_id, action)
+
+
+def _approval_path(scenario_run_id: int, attempt_id: int, action) -> AttemptOutcome:
+    """REQUIRE_APPROVAL: ask the approver. Only APPROVED continues — through the same Tool Validation,
+    Execute and Verification as any ALLOW; REJECTED or no answer (PENDING) is recorded and executes nothing.
+    Nothing is checkpointed while the answer is awaited, so a crash then simply asks again on resume."""
+    approval = policy_layer.request_approval(action)
+    if approval in (policy_layer.APPROVED, policy_layer.REJECTED):
+        _trace_approval(scenario_run_id, attempt_id, action, approval)
+    if approval != policy_layer.APPROVED:
+        return _record_blocked(scenario_run_id, attempt_id, PolicyDecision.REQUIRE_APPROVAL, action, approval)
+    _record_allow(scenario_run_id, attempt_id, action, approved=True)
+    return _validate_execute_verify(scenario_run_id, attempt_id, action)
+
+
+def _trace_approval(scenario_run_id: int, attempt_id: int, action, approval: str) -> None:
+    """Trace the human's answer before the decision it leads to is checkpointed."""
+    trace_logger.emit(scenario_run_id, attempt_id, "state_transition",
+                      {"stage": "approval", "result": approval, "action": _describe(action)})
 
 
 def resume_attempt(scenario_run_id: int, attempt_id: int, action) -> AttemptOutcome:
@@ -113,25 +134,29 @@ def _verify(scenario_run_id: int, attempt_id: int, execution_result: str) -> Att
                           result.status, result.failure_reason)
 
 
-def _record_blocked(scenario_run_id: int, attempt_id: int, decision: PolicyDecision, action) -> AttemptOutcome:
+def _record_blocked(scenario_run_id: int, attempt_id: int, decision: PolicyDecision, action,
+                    approval: str = None) -> AttemptOutcome:
     """Checkpoint a DENY / REQUIRE_APPROVAL decision and trace it; nothing executes (INV-S2, INV-D2)."""
     state_manager.checkpoint(scenario_run_id, "policy", {"attempt_id": attempt_id, "policy_decision": decision.value})
     payload = {"decision": decision.value, "action": _describe(action)}
     if decision is PolicyDecision.REQUIRE_APPROVAL:
-        payload["approval"] = policy_layer.request_approval(action)
+        payload["approval"] = approval or policy_layer.PENDING
     trace_logger.emit(scenario_run_id, attempt_id, "policy_decision", payload)
     return AttemptOutcome(decision.value)
 
 
-def _record_allow(scenario_run_id: int, attempt_id: int, action) -> None:
-    """Checkpoint ALLOW with attempts_used + 1 in the same transaction (INV-D2), then trace it."""
+def _record_allow(scenario_run_id: int, attempt_id: int, action, approved: bool = False) -> None:
+    """Checkpoint ALLOW with attempts_used + 1 in the same transaction (INV-D2), then trace it.
+    approved=True marks an ALLOW that came from a human approval of a REQUIRE_APPROVAL action."""
     used = state_manager.resume(scenario_run_id)["attempts_used"]
     state_manager.checkpoint(
         scenario_run_id, "policy",
         {"attempt_id": attempt_id, "policy_decision": PolicyDecision.ALLOW.value, "attempts_used": used + 1},
     )
-    trace_logger.emit(scenario_run_id, attempt_id, "policy_decision",
-                      {"decision": PolicyDecision.ALLOW.value, "action": _describe(action), "attempts_used": used + 1})
+    payload = {"decision": PolicyDecision.ALLOW.value, "action": _describe(action), "attempts_used": used + 1}
+    if approved:
+        payload["approved_by"] = "human"
+    trace_logger.emit(scenario_run_id, attempt_id, "policy_decision", payload)
 
 
 def _record_validation(scenario_run_id: int, attempt_id: int, validation) -> None:

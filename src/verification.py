@@ -12,6 +12,12 @@ Checks, against the expectation registered for the run's scenario_type:
       `nullable` are exempt — the threshold is never loosened for the whole table).
 A scenario_type with no registered expectation fails closed. Real expectations are
 registered with the scenario definitions (Session 3).
+
+Additions for the interactive control center (default behaviour unchanged):
+  verify_detailed(): the SAME checks as verify(), reported per group (schema, row count, null rate,
+      value) so a UI can show each result as the code returned it — not recomputed anywhere else.
+  register_value_checks(): an optional fourth group, compared against Bronze: "does this Silver
+      column equal the Bronze source of truth?". Off unless a caller registers it.
 """
 
 import re
@@ -31,6 +37,8 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}")
 
 _db_path = DEFAULT_DB_PATH
 _expectations = {}
+_value_checks = {}  # scenario_type -> ((table, column, ref_table, ref_column, key), ...), opt-in
+VALUE_TOLERANCE = 1e-9
 
 
 class VerificationError(Exception):
@@ -102,6 +110,46 @@ def check_scenario_state(scenario_type: str, db_path) -> VerificationResult:
     return VerificationResult(FAIL if details else PASS, tuple(details))
 
 
+def register_value_checks(scenario_type: str, checks) -> None:
+    """Opt in to value-level checks for scenario_type: each check is (table, column, ref_table, ref_column, key)
+    and requires table.column to equal ref_table.ref_column on every shared key (NULL never equals a value)."""
+    checks = tuple(tuple(check) for check in checks)
+    problem = _value_check_problem(scenario_type, checks)
+    if problem:
+        raise VerificationError(problem)
+    _value_checks[scenario_type] = checks
+
+
+def clear_value_checks() -> None:
+    """Return to schema, row-count and null-rate checks only."""
+    _value_checks.clear()
+
+
+def verify_detailed(scenario_run_id: int) -> list:
+    """Run verify()'s checks and report each group: [{name, label, configured, ok, failures}, ...]."""
+    try:
+        conn = _connect_read_only(_db_path)
+        try:
+            groups = _check_groups(conn, _scenario_type(conn, scenario_run_id))
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise VerificationError(f"cannot read database {_db_path}: {exc}") from exc
+    return _group_report(groups)
+
+
+def check_scenario_state_detailed(scenario_type: str, db_path) -> list:
+    """check_scenario_state()'s checks reported per group (see verify_detailed), against db_path read-only."""
+    try:
+        conn = _connect_read_only(db_path)
+        try:
+            return _group_report(_check_groups(conn, scenario_type))
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise VerificationError(f"cannot read database {db_path}: {exc}") from exc
+
+
 def _run_checks(scenario_run_id: int) -> list:
     """Return the failures of every check for the run (empty list = all passed)."""
     conn = _connect_read_only(_db_path)
@@ -118,13 +166,33 @@ def _connect_read_only(db_path) -> sqlite3.Connection:
 
 def _checks_for(conn, scenario_type: str) -> list:
     """Return the failures of every check registered for scenario_type on conn's pipeline."""
+    return [failure for failures in _check_groups(conn, scenario_type).values() for failure in failures]
+
+
+GROUP_LABELS = (("schema", "Schema match"), ("row_count", "Row count"), ("null_rate", "NULL rate"),
+                ("value", "Value check against Bronze"))
+
+
+def _check_groups(conn, scenario_type: str) -> dict:
+    """Return {group: [failures]} for scenario_type; a group absent from the dict was not run."""
     expectation = _expectations.get(scenario_type)
     if expectation is None:
-        return [f"no verification expectation registered for {scenario_type}"]
+        return {"schema": [f"no verification expectation registered for {scenario_type}"]}
     columns = _table_columns(conn, expectation.table)
     if not columns:
-        return [f"schema: table {expectation.table} does not exist"]
-    return _check_schema(expectation, columns) + _check_rows(conn, expectation, columns)
+        return {"schema": [f"schema: table {expectation.table} does not exist"]}
+    groups = {"schema": _check_schema(expectation, columns),
+              "row_count": _check_row_count(conn, expectation),
+              "null_rate": _check_null_rates(conn, expectation, columns)}
+    if scenario_type in _value_checks:
+        groups["value"] = _check_values(conn, _value_checks[scenario_type], columns, expectation.table)
+    return groups
+
+
+def _group_report(groups: dict) -> list:
+    """Shape the groups for display; a group that was not run is reported as not configured."""
+    return [{"name": name, "label": label, "configured": name in groups, "ok": not groups.get(name),
+             "failures": list(groups.get(name, []))} for name, label in GROUP_LABELS]
 
 
 def _expectation_problem(scenario_type, expectation):
@@ -170,11 +238,23 @@ def _check_schema(expectation: Expectation, actual: dict) -> list:
 
 def _check_rows(conn, expectation: Expectation, actual: dict) -> list:
     """Checks (2) and (3): row count within bounds; null rate of each present expected column."""
+    return _check_row_count(conn, expectation) + _check_null_rates(conn, expectation, actual)
+
+
+def _check_row_count(conn, expectation: Expectation) -> list:
+    """Check (2): the table's row count is within [min_rows, max_rows]."""
+    table = expectation.table
+    total = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+    if expectation.min_rows <= total <= expectation.max_rows:
+        return []
+    return [f"row count: {table} has {total} rows, expected {expectation.min_rows}..{expectation.max_rows}"]
+
+
+def _check_null_rates(conn, expectation: Expectation, actual: dict) -> list:
+    """Check (3): each present, non-exempt expected column's null rate is within the threshold."""
     table = expectation.table
     total = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
     failures = []
-    if not expectation.min_rows <= total <= expectation.max_rows:
-        failures.append(f"row count: {table} has {total} rows, expected {expectation.min_rows}..{expectation.max_rows}")
     checked = (name for name, _ in expectation.columns if name in actual and name not in expectation.nullable)
     for name in checked:
         nulls = conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{name}" IS NULL').fetchone()[0]
@@ -182,3 +262,40 @@ def _check_rows(conn, expectation: Expectation, actual: dict) -> list:
         if rate > expectation.max_null_rate:
             failures.append(f"null rate: {table}.{name} is {rate:.3f}, above threshold {expectation.max_null_rate}")
     return failures
+
+
+def _check_values(conn, checks: tuple, actual: dict, table: str) -> list:
+    """Opt-in check (4): each registered column equals its Bronze counterpart on every shared key."""
+    failures = []
+    for check_table, column, ref_table, ref_column, key in checks:
+        if check_table != table or column not in actual:
+            continue  # a missing column is the schema check's finding
+        failures += _value_mismatches(conn, check_table, column, ref_table, ref_column, key)
+    return failures
+
+
+def _value_mismatches(conn, table: str, column: str, ref_table: str, ref_column: str, key: str) -> list:
+    """Return one failure if any row's value differs from (or is NULL against) the reference table."""
+    try:
+        bad = conn.execute(
+            f'SELECT COUNT(*) FROM "{table}" s JOIN "{ref_table}" b ON s."{key}" = b."{key}" '
+            f'WHERE s."{column}" IS NULL OR b."{ref_column}" IS NULL OR '
+            f'(typeof(s."{column}") IN (\'integer\', \'real\') AND typeof(b."{ref_column}") IN (\'integer\', \'real\') '
+            f'AND ABS(s."{column}" - b."{ref_column}") > {VALUE_TOLERANCE}) OR '
+            f'(NOT (typeof(s."{column}") IN (\'integer\', \'real\') AND typeof(b."{ref_column}") IN (\'integer\', \'real\')) '
+            f'AND s."{column}" IS NOT b."{ref_column}")').fetchone()[0]
+    except sqlite3.OperationalError as exc:  # e.g. the reference column is missing
+        return [f"value: cannot compare {table}.{column} with {ref_table}.{ref_column}: {exc}"]
+    return [f"value: {bad} {table}.{column} value(s) differ from {ref_table}.{ref_column}"] if bad else []
+
+
+def _value_check_problem(scenario_type, checks):
+    """Return why registered value checks are invalid, or None."""
+    if scenario_type not in SCENARIO_TYPES:
+        return f"unknown scenario_type: {scenario_type!r}"
+    for check in checks:
+        if len(check) != 5 or not all(_IDENTIFIER.fullmatch(str(part)) for part in check):
+            return "value check must be (table, column, ref_table, ref_column, key) identifiers"
+        if check[0] not in PIPELINE_TABLES or check[2] not in PIPELINE_TABLES:
+            return "value check tables must be PipelineState tables"
+    return None

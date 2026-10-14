@@ -4,3 +4,8 @@ data/*.db-shm
 __pycache__/
 *.pyc
 .env
+# control center sandbox (ui/server.py)
+data/demo_ui/
+.venv/
+__pycache__/
+*.py[cod]

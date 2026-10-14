@@ -32,15 +32,16 @@ from pathlib import Path
 import anthropic
 
 import env_file
+import pipeline_config
 import trace_logger
+from pipeline_tables import PIPELINE_TABLES
 
-MODEL = "claude-sonnet-5"
+MODEL = pipeline_config.MODEL  # config/pipeline.json run.model (or DATAOPS_MODEL)
 MAX_TOKENS = 8000
 REQUEST_TIMEOUT_SECONDS = 300.0  # the SDK's own retries are off: the orchestrator owns the retry policy
 MAX_ROWS_SHOWN = 50
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "harness.db"
-PIPELINE_TABLES = ("pipeline_bronze", "pipeline_silver", "pipeline_gold")
 
 SYSTEM_PROMPT = """You are the recovery planner for a Bronze -> Silver -> Gold data pipeline stored in SQLite.
 A failure has been detected. Diagnose it from the pipeline state, then propose exactly ONE action
@@ -50,7 +51,7 @@ The pipeline can be repaired with these tools (all parameters are required):
 - add_column(table, column, column_type): add a column; column_type is one of TEXT, INTEGER, REAL, NUMERIC.
 - rename_column(table, old_name, new_name): rename an existing column.
 - backfill_column(table, column, value): set every NULL value in a column to `value`.
-`table` is one of pipeline_bronze, pipeline_silver, pipeline_gold.
+`table` is one of """ + ", ".join(PIPELINE_TABLES) + """.
 
 Reply with: a short diagnosis, your reasoning, the tool name, and the tool's parameters as a JSON
 object encoded in a string (for example "{\\"table\\": \\"pipeline_silver\\", ...}")."""
